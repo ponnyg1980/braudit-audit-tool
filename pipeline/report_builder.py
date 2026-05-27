@@ -370,10 +370,23 @@ def build_step5_report(*, order_meta: dict,
     doc.add_page_break()
     add_heading(doc, '3e. Trademark Search Results \u2014 Live', level=1)
     add_para(doc, 'Live trademark records (Registered and Pending) where the mark is in scope and the recital touches one or more of the client\u2019s classes. Class definitions are the UKIPO standardised Nice Classification headings. Sorted by initial-review score descending.', size=10)
+    # Shorten the "Stylized characters" Mark Type label so it fits in the Type
+    # column on one line. Other values ("Word", "Combined") already fit.
+    def _short_type(t):
+        s = str(t or '').strip()
+        if 'stylized' in s.lower():
+            return 'Stylized'
+        return s
+
+    # Column widths re-balanced so the Risk column comfortably fits
+    # 'Negligible' (10 chars) and 'Medium Risk' (11 chars) on one line at 7pt.
+    # Total: 0.7 + 1.2 + 1.55 + 0.7 + 1.3 + 0.75 + 0.8 = 7.0 inches (content width)
+    tm_widths = [0.7, 1.2, 1.55, 0.7, 1.3, 0.75, 0.8]
+    tm_headers = ['App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
+
     if trademarks_live:
-        tl_body = [[t['app'], t['mark'], _class_cell(t['classes']), t['type'], t['owner'], t['status'], t['risk']] for t in trademarks_live]
-        add_table(doc, [0.8, 1.2, 1.7, 0.6, 1.5, 0.7, 0.5],
-                  ['App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk'],
+        tl_body = [[t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_live]
+        add_table(doc, tm_widths, tm_headers,
                   tl_body, risk_col_index=6,
                   hyperlink_col_indexes={0: lambda row: f"https://tsdr.uspto.gov/statusview/sn{row[0]}"},
                   font_size=7)
@@ -385,9 +398,8 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
     add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
     if trademarks_dead:
-        td_body = [[t['app'], t['mark'], _class_cell(t['classes']), t['type'], t['owner'], t['status'], t['risk']] for t in trademarks_dead]
-        add_table(doc, [0.8, 1.2, 1.7, 0.6, 1.5, 0.7, 0.5],
-                  ['App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk'],
+        td_body = [[t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_dead]
+        add_table(doc, tm_widths, tm_headers,
                   td_body, risk_col_index=6,
                   hyperlink_col_indexes={0: lambda row: f"https://tsdr.uspto.gov/statusview/sn{row[0]}"},
                   font_size=7)
