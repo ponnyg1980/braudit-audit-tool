@@ -43,6 +43,28 @@ def risk_fill(risk):
     return 'FFFFFF'
 
 
+def tm_url(office: str, app_num: str) -> str:
+    """Return the official-register URL for a trademark, based on the office code.
+
+    Supports US (USPTO TSDR), UK (UKIPO), EU (EUIPO eSearch) and WIPO/Madrid
+    (WIPO Brand Database). Returns '' for unknown offices so callers can fall
+    back to plain text instead of a broken link.
+    """
+    if not app_num:
+        return ''
+    o = (office or '').upper().strip()
+    n = str(app_num).strip()
+    if o in ('US', 'USPTO'):
+        return f'https://tsdr.uspto.gov/statusview/sn{n}'
+    if o in ('UK', 'UKIPO', 'GB'):
+        return f'https://trademarks.ipo.gov.uk/ipo-tmcase/page/Results/1/{n}'
+    if o in ('EU', 'EUIPO', 'EM'):
+        return f'https://euipo.europa.eu/eSearch/#details/trademarks/{n}'
+    if o in ('WIPO', 'MADRID', 'IR', 'WO'):
+        return f'https://www3.wipo.int/branddb/en/showData.jsp?ID={n}'
+    return ''
+
+
 def add_hyperlink(paragraph, url, text, color='0563C1', underline=True, font_size=9, bold=False):
     """Inserts an external hyperlink into a paragraph."""
     part = paragraph.part
@@ -153,6 +175,23 @@ def add_table(doc, col_widths_in, header_row, body_rows, *, header_fill='1F3864'
 
             p = cell.paragraphs[0]
             p.paragraph_format.space_after = Pt(0)
+
+            # NEW: multi-link cell support \u2014 if val is a list of (text, url)
+            # tuples, render each as its own hyperlink on its own paragraph.
+            if isinstance(val, list) and val and isinstance(val[0], tuple):
+                first_text, first_url = val[0]
+                if first_url:
+                    add_hyperlink(p, first_url, str(first_text), font_size=font_size)
+                else:
+                    run(p, str(first_text), size=font_size)
+                for txt, url in val[1:]:
+                    p_next = cell.add_paragraph()
+                    p_next.paragraph_format.space_after = Pt(0)
+                    if url:
+                        add_hyperlink(p_next, url, str(txt), font_size=font_size)
+                    else:
+                        run(p_next, str(txt), size=font_size)
+                continue
 
             if c_idx in hyperlink_col_indexes:
                 url = hyperlink_col_indexes[c_idx](row)
@@ -318,13 +357,18 @@ def build_step5_report(*, order_meta: dict,
 
     # 3b Companies
     add_heading(doc, '3b. Companies House UK Search Results', level=2)
-    add_para(doc, 'Company name search using UK Companies House. Records retained only where the SIC included client SIC.', size=10)
+    add_para(doc, 'Company name search using UK Companies House. Records retained only where the SIC included client SIC. Company name and company number link directly to the Companies House register.', size=10)
     if companies:
+        # Build a {number: link} map so both Name and Co. No. cells can use it
+        co_link_by_number = {c['number']: c.get('link') or f"https://find-and-update.company-information.service.gov.uk/company/{c['number']}" for c in companies}
         c_body = [[c['mark'], c['status'], c['number'], c['sic'], c['risk']] for c in companies]
         add_table(doc, [2.4, 1.0, 1.4, 1.7, 1.3],
                   ['Registered Company', 'Status', 'Co. No.', 'SIC', 'Risk'],
                   c_body, risk_col_index=4,
-                  hyperlink_col_indexes={0: lambda row: next((c['link'] for c in companies if c['mark']==row[0]), '')},
+                  hyperlink_col_indexes={
+                      0: lambda row: co_link_by_number.get(row[2], ''),  # mark name -> CH page
+                      2: lambda row: co_link_by_number.get(row[2], ''),  # co. no -> CH page
+                  },
                   font_size=10)
     else:
         add_para(doc, 'No matching companies flagged.', italic=True, color='595959')
@@ -333,7 +377,13 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3c. Domain Name Search Results', level=2)
     add_para(doc, 'Domain searches using variations of the client\u2019s mark across .com, .net, .co.uk, .co and .uk.', size=10)
     if domains:
-        d_body = [[d['mark_text'], '  ·  '.join(d['urls']), f"{d['risk']} ({d['score']})"] for d in domains]
+        # Build domain cells as list[(text, url)] so each URL is a clickable link
+        d_body = [
+            [d['mark_text'],
+             [(u, u) for u in d['urls']],
+             f"{d['risk']} ({d['score']})"]
+            for d in domains
+        ]
         add_table(doc, [2.0, 4.4, 1.4],
                   ['Mark Variant', 'Domains', 'Risk (Score)'], d_body,
                   risk_col_index=2, font_size=10)
@@ -342,12 +392,14 @@ def build_step5_report(*, order_meta: dict,
 
     # 3d Social
     add_heading(doc, '3d. Social Media Search Results', level=2)
-    add_para(doc, 'Social media searches across Facebook, Instagram, LinkedIn, TikTok, YouTube and X.', size=10)
+    add_para(doc, 'Social media searches across Facebook, Instagram, LinkedIn, TikTok, YouTube and X. Each platform name is a clickable link to that account.', size=10)
     if social:
         s_body = []
         for s in social:
-            plats = [f"{k}: {v}" for k, v in s['platforms'].items() if v]
-            s_body.append([s['mark_text'], '\n'.join(plats), f"{s['risk']} ({s['score']})"])
+            # Build platform cells as list[(label, url)] so each platform name
+            # is a clickable hyperlink straight to that profile/page.
+            plats = [(k, v) for k, v in s['platforms'].items() if v]
+            s_body.append([s['mark_text'], plats, f"{s['risk']} ({s['score']})"])
         add_table(doc, [2.0, 4.4, 1.4],
                   ['Mark Variant', 'Platforms', 'Risk (Score)'], s_body,
                   risk_col_index=2, font_size=9)
@@ -380,17 +432,22 @@ def build_step5_report(*, order_meta: dict,
             return 'Stylized'
         return s
 
-    # Column widths re-balanced so the Risk column comfortably fits
-    # 'Negligible' (10 chars) and 'Medium Risk' (11 chars) on one line at 7pt.
-    # Total: 0.7 + 1.2 + 1.55 + 0.7 + 1.3 + 0.75 + 0.8 = 7.0 inches (content width)
-    tm_widths = [0.7, 1.2, 1.55, 0.7, 1.3, 0.75, 0.8]
-    tm_headers = ['App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
+    # Column widths re-balanced: Office column added at the start.
+    # Total: 0.4 + 0.7 + 1.1 + 1.45 + 0.65 + 1.3 + 0.7 + 0.7 = 7.0 inches (content width)
+    tm_widths = [0.4, 0.7, 1.1, 1.45, 0.65, 1.3, 0.7, 0.7]
+    tm_headers = ['Office', 'App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
+
+    # Office-aware hyperlink for the App # column (index 1 now)
+    # We pull the office from column 0 of the row so each link goes to the
+    # correct register (USPTO TSDR / UKIPO / EUIPO / WIPO).
+    def _app_link(row):
+        return tm_url(row[0], row[1])
 
     if trademarks_live:
-        tl_body = [[t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_live]
+        tl_body = [[t['office'], t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_live]
         add_table(doc, tm_widths, tm_headers,
-                  tl_body, risk_col_index=6,
-                  hyperlink_col_indexes={0: lambda row: f"https://tsdr.uspto.gov/statusview/sn{row[0]}"},
+                  tl_body, risk_col_index=7,
+                  hyperlink_col_indexes={1: _app_link},
                   font_size=7)
     else:
         add_para(doc, 'No live trademarks flagged.', italic=True, color='595959')
@@ -400,10 +457,10 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
     add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
     if trademarks_dead:
-        td_body = [[t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_dead]
+        td_body = [[t['office'], t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_dead]
         add_table(doc, tm_widths, tm_headers,
-                  td_body, risk_col_index=6,
-                  hyperlink_col_indexes={0: lambda row: f"https://tsdr.uspto.gov/statusview/sn{row[0]}"},
+                  td_body, risk_col_index=7,
+                  hyperlink_col_indexes={1: _app_link},
                   font_size=7)
 
     # ---- Footer message ----
