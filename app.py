@@ -104,15 +104,50 @@ meta = st.session_state.get('order_meta') or {}
 with st.form('audit_form', clear_on_submit=False):
 
     st.subheader('2. Audit operator details')
-    st.caption('These are the only fields you have to type \u2014 they\u2019re not in the spreadsheet today.')
+    st.caption('Pre-filled from the spreadsheet (Order Form rows 58\u201364). Edit any field to override for this audit only. The two reference fields are optional \u2014 they don\u2019t affect the audit but flow through to the report header.')
+    # Optional reference fields (rows 58/59) shown first
+    c0a, c0b = st.columns(2)
+    with c0a:
+        brand_reference = st.text_input(
+            'Brand reference',
+            value=meta.get('brand_reference', ''),
+            help='Optional. From Order Form R58. Usually the word mark text.',
+        )
+    with c0b:
+        report_reference = st.text_input(
+            'Report reference',
+            value=meta.get('report_reference', ''),
+            help='Optional. From Order Form R59. Usually the Deal Name.',
+        )
+    # Required operator fields (rows 60\u201364)
     c1, c2 = st.columns(2)
     with c1:
-        client_first = st.text_input('Client first name *')
-        client_email = st.text_input('Client email address *')
-        account_manager = st.text_input('Account manager *')
+        client_first = st.text_input(
+            'Client first name *',
+            value=meta.get('client_first', ''),
+            help='From Order Form R60.',
+        )
+        client_email = st.text_input(
+            'Client email address *',
+            value=meta.get('client_email', ''),
+            help='From Order Form R62.',
+        )
+        account_manager = st.text_input(
+            'Account manager *',
+            value=meta.get('account_manager', ''),
+            help='From Order Form R63.',
+        )
     with c2:
-        client_last = st.text_input('Client last name *')
-        prepared_by = st.text_input('Report prepared by *')
+        client_last = st.text_input(
+            'Client last name *',
+            value=meta.get('client_last', ''),
+            help='From Order Form R61.',
+        )
+        prepared_by = st.text_input(
+            'Report prepared by *',
+            value=meta.get('prepared_by', ''),
+            help='From Order Form R64.',
+        )
 
     st.subheader('3. Search criteria from your Order Form')
     st.caption('Pre-filled from the spreadsheet. Edit any field below to override the value for this audit only.')
@@ -199,6 +234,8 @@ if submitted:
                 'account_manager': account_manager,
                 'prepared_by': prepared_by,
                 'deal_id': deal_id,
+                'brand_reference': brand_reference,
+                'report_reference': report_reference,
                 'search_date': search_date_value,
                 'search_type': 'Word',
                 'mark_label': f'Exact: {exact}   ·   Similar: {similar}' if similar else f'Exact: {exact}',
