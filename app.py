@@ -17,6 +17,11 @@ from pipeline.filters import (
     extract_trademark_images,
 )
 from pipeline.report_builder import build_step5_report
+from pipeline.forensic import SignaClient, verify_records
+from pipeline.forensic_narrative import (
+    NarrativeClient, ReportType, run_forensic_layer,
+)
+from pipeline.forensic_report import build_forensic_appendix
 
 
 # ---------- page setup ----------
@@ -276,50 +281,231 @@ if submitted:
                 raw_counts=raw_counts,
             )
 
+        # Stash the audit result so it survives session reruns triggered by
+        # the optional Step 6 forensic-layer button below. Without this,
+        # clicking "Run Forensic Audit" would lose tm_live etc.
+        st.session_state['step5_result'] = {
+            'order_meta': order_meta,
+            'tm_live': tm_live,
+            'tm_dead': tm_dead,
+            'companies_count': len(companies),
+            'domains_count': len(domains),
+            'google_count': len(google),
+            'social_count': len(social),
+            'classes_text': classes_text,
+            'exact': exact,
+            'countries': countries,
+            'client_name': client_name,
+            'docx_bytes': docx_bytes,
+        }
+        # Clear any prior forensic output so the page doesn't show a stale
+        # forensic appendix from a previous spreadsheet upload.
+        st.session_state.pop('forensic_result', None)
+
         st.success('✅ Audit complete.')
-
-        st.subheader('Summary of flagged results')
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric('Live Trademarks', len(tm_live))
-        m2.metric('Dead Trademarks', len(tm_dead))
-        m3.metric('Companies', len(companies))
-        m4.metric('Domains', len(domains))
-        m5.metric('Google + Social', len(google) + len(social))
-
-        from collections import Counter
-        risk_dist = Counter(t['risk'] for t in tm_live)
-        st.write('**Live trademark risk distribution:** ' + ', '.join(
-            f'{k}: {v}' for k, v in risk_dist.most_common()
-        ) if risk_dist else '_no live trademarks flagged_')
-
-        st.divider()
-        st.subheader('Download the report')
-        safe_client = ''.join(c if c.isalnum() else '_' for c in client_name)[:40]
-        filename = f'Braudit Report – {safe_client} – {date.today().isoformat()}.docx'
-        st.download_button(
-            label='⬇ Download Word report',
-            data=docx_bytes,
-            file_name=filename,
-            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            use_container_width=True,
-        )
-
-        with st.expander('Preview — Live trademarks'):
-            st.dataframe([
-                {k: v for k, v in t.items() if k in ('app','mark','classes','type','owner','status','score','risk')}
-                for t in tm_live
-            ], use_container_width=True)
-        if tm_dead:
-            with st.expander(f'Preview — Dead trademarks ({len(tm_dead)})'):
-                st.dataframe([
-                    {k: v for k, v in t.items() if k in ('app','mark','classes','type','owner','status','risk')}
-                    for t in tm_dead
-                ], use_container_width=True)
 
     except Exception as e:
         st.error(f'Audit failed: {e}')
         raise
 
+
+# ---------- step 5 display (persistent across reruns) ----------
+
+step5 = st.session_state.get('step5_result')
+if step5:
+    st.subheader('Summary of flagged results')
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric('Live Trademarks', len(step5['tm_live']))
+    m2.metric('Dead Trademarks', len(step5['tm_dead']))
+    m3.metric('Companies', step5['companies_count'])
+    m4.metric('Domains', step5['domains_count'])
+    m5.metric('Google + Social', step5['google_count'] + step5['social_count'])
+
+    from collections import Counter
+    risk_dist = Counter(t['risk'] for t in step5['tm_live'])
+    st.write('**Live trademark risk distribution:** ' + ', '.join(
+        f'{k}: {v}' for k, v in risk_dist.most_common()
+    ) if risk_dist else '_no live trademarks flagged_')
+
+    st.divider()
+    st.subheader('Download the report')
+    safe_client = ''.join(c if c.isalnum() else '_' for c in step5['client_name'])[:40]
+    filename = f'Braudit Report – {safe_client} – {date.today().isoformat()}.docx'
+    st.download_button(
+        label='⬇ Download Word report',
+        data=step5['docx_bytes'],
+        file_name=filename,
+        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        use_container_width=True,
+    )
+
+    with st.expander('Preview — Live trademarks'):
+        st.dataframe([
+            {k: v for k, v in t.items() if k in ('app','mark','classes','type','owner','status','score','risk')}
+            for t in step5['tm_live']
+        ], use_container_width=True)
+    if step5['tm_dead']:
+        with st.expander(f'Preview — Dead trademarks ({len(step5["tm_dead"])})'):
+            st.dataframe([
+                {k: v for k, v in t.items() if k in ('app','mark','classes','type','owner','status','risk')}
+                for t in step5['tm_dead']
+            ], use_container_width=True)
+
+
+# ---------- step 6: forensic layer (optional) ----------
+
+if step5:
+    st.divider()
+    st.subheader('6. Add Forensic Layer (optional)')
+    st.caption(
+        'Verify each cited trademark against the Signa unified register API and '
+        'generate forensic commentary via Anthropic Sonnet 4.6. Produces a separate '
+        'Word appendix to accompany the Braudit monitoring report above.'
+    )
+
+    has_signa = bool(st.secrets.get('signa_api_key', ''))
+    has_anthropic = bool(st.secrets.get('anthropic_api_key', ''))
+    if not (has_signa and has_anthropic):
+        missing = []
+        if not has_signa: missing.append('`signa_api_key`')
+        if not has_anthropic: missing.append('`anthropic_api_key`')
+        st.warning(
+            'Forensic layer requires the following keys in Streamlit Secrets: '
+            + ', '.join(missing)
+            + '. Ask the admin to add them in **Manage app → Secrets** before running.'
+        )
+
+    f_c1, f_c2, f_c3 = st.columns([2, 2, 1.4])
+    with f_c1:
+        report_type_label = st.radio(
+            'Report type',
+            options=['Pre-Application — likelihood of objection',
+                     'Post-Registration — potential infringements'],
+            index=0,
+            help='Pre-Application: client is filing a new mark and wants to know which senior rights might block. '
+                 'Post-Registration: client already has a registered mark and wants to identify potential infringers.',
+        )
+    with f_c2:
+        # Default to top 10 by score to keep the cost predictable. Operators
+        # can dial up to all live records if they want full coverage.
+        live_count = len(step5['tm_live'])
+        default_top_n = min(10, live_count) if live_count else 1
+        top_n = st.number_input(
+            'Records to forensically audit',
+            min_value=1, max_value=max(1, live_count), value=default_top_n, step=1,
+            help='Top N live trademarks by score will be verified via Signa and forensically commented. '
+                 'Higher N → higher API cost. 10 is a sensible default.',
+        )
+    with f_c3:
+        client_jurisdiction = st.selectbox(
+            'Client jurisdiction',
+            options=['US', 'GB', 'EU', 'WO'],
+            index=0,
+            help='Client\u2019s primary filing jurisdiction. Used by the scoring rubric for the region criterion.',
+        )
+
+    forensic_clicked = st.button(
+        '▶ Run Forensic Audit',
+        type='primary',
+        use_container_width=True,
+        disabled=not (has_signa and has_anthropic),
+    )
+
+    if forensic_clicked:
+        try:
+            # Sort live records by score descending, take top N
+            sorted_live = sorted(
+                step5['tm_live'],
+                key=lambda t: -int(t.get('score') or 0),
+            )
+            target_records = sorted_live[:int(top_n)]
+
+            # Build clients
+            signa_client = SignaClient(api_key=st.secrets['signa_api_key'])
+            narrative_client = NarrativeClient(api_key=st.secrets['anthropic_api_key'])
+
+            # Resolve report type
+            report_type = (ReportType.PRE_APPLICATION
+                           if report_type_label.startswith('Pre-')
+                           else ReportType.POST_REGISTRATION)
+
+            # Parse client classes from the comma-separated text
+            try:
+                client_classes = [
+                    int(x.strip()) for x in step5['classes_text'].split(',') if x.strip().isdigit()
+                ]
+            except Exception:
+                client_classes = []
+
+            # --- Phase 1: Signa verification (with progress bar) ---
+            prog = st.progress(0.0, text='Verifying records against Signa...')
+            def _cb(idx, total, office, app):
+                pct = idx / max(1, total)
+                prog.progress(pct, text=f'Verifying {idx}/{total} — {office} {app}')
+            with st.spinner('Verifying records against Signa unified register API...'):
+                signa_records = verify_records(signa_client, target_records, progress_callback=_cb)
+            prog.empty()
+
+            verified_count = sum(1 for r in signa_records if r.verified)
+            st.info(f'Signa verification: {verified_count} of {len(signa_records)} records confirmed.')
+
+            # --- Phase 2: scoring + narrative (one batched LLM call per pass) ---
+            client_brand = {
+                'mark': step5['exact'],
+                'classes': client_classes,
+                'jurisdiction': client_jurisdiction,
+                'brand_reference': step5['order_meta'].get('brand_reference', ''),
+                'countries': step5['countries'],
+            }
+            with st.spinner('Generating forensic commentary (Sonnet 4.6)...'):
+                forensic_report = run_forensic_layer(
+                    signa_records=signa_records,
+                    client_brand=client_brand,
+                    report_type=report_type,
+                    narrative_client=narrative_client,
+                    client_classes=client_classes,
+                    client_mark=step5['exact'],
+                    client_jurisdiction=client_jurisdiction,
+                )
+
+            # --- Phase 3: render docx ---
+            with st.spinner('Rendering forensic appendix...'):
+                forensic_bytes = build_forensic_appendix(forensic_report, step5['order_meta'])
+
+            st.session_state['forensic_result'] = {
+                'bytes': forensic_bytes,
+                'report_type': report_type.value,
+                'record_count': len(signa_records),
+                'verified_count': verified_count,
+            }
+            st.success('✅ Forensic layer complete.')
+        except Exception as e:
+            st.error(f'Forensic audit failed: {e}')
+            raise
+
+    # Display forensic download if available
+    forensic = st.session_state.get('forensic_result')
+    if forensic:
+        st.divider()
+        st.subheader('Download the forensic appendix')
+        rt_label = ('Pre-Application' if forensic['report_type'] == 'pre_application'
+                    else 'Post-Registration')
+        safe_client = ''.join(c if c.isalnum() else '_' for c in step5['client_name'])[:40]
+        f_filename = f'Braudit Forensic Appendix ({rt_label}) – {safe_client} – {date.today().isoformat()}.docx'
+        st.download_button(
+            label=f'⬇ Download forensic appendix ({rt_label})',
+            data=forensic['bytes'],
+            file_name=f_filename,
+            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            use_container_width=True,
+        )
+        st.caption(
+            f'{forensic["record_count"]} records audited · '
+            f'{forensic["verified_count"]} verified via Signa · '
+            f'{rt_label} report type.'
+        )
+
+
 # ---------- footer ----------
 st.divider()
-st.caption('Braudit Audit Tool · v1.1 · Internal use only · Steps 2–5 only (Step 6 forensic audit coming in v2)')
+st.caption('Braudit Audit Tool · v2.0 · Internal use only · Steps 2–6 (Step 6 forensic layer powered by Signa + Anthropic Sonnet 4.6)')
