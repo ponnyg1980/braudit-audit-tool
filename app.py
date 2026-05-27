@@ -14,6 +14,7 @@ from pipeline.filters import (
     read_sheets, process_trademarks, process_companies,
     process_google, process_domains, process_social,
     extract_specific_terms, extract_order_metadata,
+    extract_trademark_images,
 )
 from pipeline.report_builder import build_step5_report
 
@@ -199,6 +200,7 @@ if submitted:
     try:
         with st.spinner('Reading scraped data...'):
             sheets = read_sheets(tmp_path)
+            tm_images = extract_trademark_images(tmp_path)
 
         target_classes = tuple(
             int(x.strip()) for x in classes_text.split(',') if x.strip().isdigit()
@@ -211,6 +213,7 @@ if submitted:
                 sheets.get('Trademarks', [[]]),
                 target_classes=target_classes,
                 root=root_word,
+                images=tm_images,
             )
             companies = process_companies(
                 sheets.get('Companies', [[]]),
