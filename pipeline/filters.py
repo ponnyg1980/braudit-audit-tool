@@ -213,6 +213,62 @@ def extract_order_metadata(xlsx_path: str) -> dict:
     return out
 
 
+def extract_trademark_images(xlsx_path: str) -> dict[int, bytes]:
+    """Pull floating images anchored to column E (the 'Image' column) of the
+    Trademarks sheet.
+
+    Returns a dict mapping the 1-based row number of the Trademarks sheet to
+    the raw image bytes (typically JPEG). Each trademark mark image is
+    embedded in the workbook by the scraper as an anchored picture, not as
+    text in the cell, so we have to walk the worksheet's _images list rather
+    than reading the cell value.
+
+    Returns {} if the Trademarks sheet has no images or can't be opened.
+    """
+    out: dict[int, bytes] = {}
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(xlsx_path, data_only=True)  # NB: read_only=True drops _images
+    except Exception:
+        return out
+    if 'Trademarks' not in wb.sheetnames:
+        wb.close()
+        return out
+    ws = wb['Trademarks']
+    for img in (getattr(ws, '_images', None) or []):
+        # Determine the row this image is anchored to. openpyxl uses a
+        # zero-indexed AnchorMarker (.col, .row); we want 1-based row.
+        row_num = None
+        try:
+            anchor = img.anchor
+            from_ = getattr(anchor, '_from', None)
+            if from_ is not None:
+                row_num = from_.row + 1
+        except Exception:
+            row_num = None
+        if row_num is None:
+            continue
+        # Pull the raw bytes. openpyxl's Image wraps either a PIL image or
+        # a file-like / blob handle. The most reliable cross-version path is
+        # to read .ref or ._data() depending on the openpyxl version.
+        data = None
+        try:
+            blob = img._data()  # method on Image \u2014 returns bytes
+            if isinstance(blob, (bytes, bytearray)):
+                data = bytes(blob)
+        except Exception:
+            try:
+                ref = getattr(img, 'ref', None)
+                if ref is not None and hasattr(ref, 'read'):
+                    data = ref.read()
+            except Exception:
+                data = None
+        if data:
+            out[row_num] = data
+    wb.close()
+    return out
+
+
 def extract_specific_terms(xlsx_path: str) -> dict[int, str]:
     """Read the Order Form sheet and pull the client's specific Goods & Services
     terms per class.
@@ -309,34 +365,46 @@ def risk_from_score(score: int, status: str) -> str:
     return 'Low Risk'
 
 
-def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH') -> list[dict]:
-    """Steps 2-4 on the Trademarks sheet."""
-    data = [r for r in rows[1:] if r[0] is not None]
+def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
+                       images: dict[int, bytes] | None = None) -> list[dict]:
+    """Steps 2-4 on the Trademarks sheet.
 
-    # Dedupe by (Office, App Number)
+    `images` is an optional {row_number: jpeg_bytes} map from
+    extract_trademark_images(); when supplied each scored record carries the
+    matching image bytes (if any) under the 'image_bytes' key so the report
+    builder can render the mark image inline.
+    """
+    images = images or {}
+    # Carry the original spreadsheet row number alongside each data row so we
+    # can look up the corresponding image after dedupe / filter / sort.
+    # Header is row 1; data starts at row 2.
+    data = [(idx + 2, r) for idx, r in enumerate(rows[1:]) if r[0] is not None]
+
+    # Dedupe by (Office, App Number) \u2014 keep the first occurrence (which
+    # preserves the earliest image too).
     seen = set()
     deduped = []
-    for r in data:
+    for row_num, r in data:
         key = (cleanstr(r[0]), cleanstr(r[1]))
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(r)
+        deduped.append((row_num, r))
 
     # Apply exclusion rules
     filtered = []
-    for r in deduped:
+    for row_num, r in deduped:
         mark = cleanstr(r[5])
         classes = cleanstr(r[7])
         if not mark_in_scope_for_root(mark, root):
             continue
         if not touches_classes(classes, target_classes):
             continue
-        filtered.append(r)
+        filtered.append((row_num, r))
 
     # Score
     scored = []
-    for r in filtered:
+    for row_num, r in filtered:
         s = score_trademark(r, target_classes, root)
         scored.append({
             'office': cleanstr(r[0]),
@@ -351,6 +419,8 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH') 
             'goods': cleanstr(r[12]),
             'score': s,
             'risk': risk_from_score(s, cleanstr(r[2])),
+            'image_bytes': images.get(row_num),
+            'source_row': row_num,
         })
 
     # Sort: live first by score desc, dead last

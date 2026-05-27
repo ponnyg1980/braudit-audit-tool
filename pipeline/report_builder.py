@@ -8,6 +8,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn, nsmap
 from docx.oxml import OxmlElement
 from datetime import date
+from io import BytesIO
 from .nice_classes import NICE_HEADINGS, parse_classes
 
 
@@ -175,6 +176,21 @@ def add_table(doc, col_widths_in, header_row, body_rows, *, header_fill='1F3864'
 
             p = cell.paragraphs[0]
             p.paragraph_format.space_after = Pt(0)
+
+            # NEW: image cell support \u2014 if val is a dict with 'image_bytes',
+            # render the JPEG/PNG inline at the requested width. Falls back to
+            # empty if there are no bytes.
+            if isinstance(val, dict) and 'image_bytes' in val:
+                img_bytes = val.get('image_bytes')
+                img_w = float(val.get('width_in', 0.55))
+                if img_bytes:
+                    try:
+                        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        cell.paragraphs[0].add_run().add_picture(BytesIO(img_bytes), width=Inches(img_w))
+                    except Exception as exc:
+                        run(p, f'[img err: {exc.__class__.__name__}]', size=font_size, color='C00000')
+                # If no image bytes, leave the cell visually empty
+                continue
 
             # NEW: multi-link cell support \u2014 if val is a list of (text, url)
             # tuples, render each as its own hyperlink on its own paragraph.
@@ -432,10 +448,10 @@ def build_step5_report(*, order_meta: dict,
             return 'Stylized'
         return s
 
-    # Column widths re-balanced: Office column added at the start.
-    # Total: 0.4 + 0.7 + 1.1 + 1.45 + 0.65 + 1.3 + 0.7 + 0.7 = 7.0 inches (content width)
-    tm_widths = [0.4, 0.7, 1.1, 1.45, 0.65, 1.3, 0.7, 0.7]
-    tm_headers = ['Office', 'App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
+    # Column widths re-balanced again with Image column inserted after Mark Text.
+    # Total: 0.4 + 0.65 + 0.95 + 0.75 + 1.25 + 0.55 + 1.05 + 0.7 + 0.7 = 7.0 inches
+    tm_widths  = [0.4,    0.65,    0.95,        0.75,    1.25,                       0.55,   1.05,    0.7,       0.7]
+    tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
 
     # Office-aware hyperlink for the App # column (index 1 now)
     # We pull the office from column 0 of the row so each link goes to the
@@ -443,10 +459,14 @@ def build_step5_report(*, order_meta: dict,
     def _app_link(row):
         return tm_url(row[0], row[1])
 
+    def _img_cell(t):
+        # Render the mark image inline at ~0.6" wide; empty cell if no image.
+        return {'image_bytes': t.get('image_bytes'), 'width_in': 0.6}
+
     if trademarks_live:
-        tl_body = [[t['office'], t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_live]
+        tl_body = [[t['office'], t['app'], t['mark'], _img_cell(t), _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_live]
         add_table(doc, tm_widths, tm_headers,
-                  tl_body, risk_col_index=7,
+                  tl_body, risk_col_index=8,
                   hyperlink_col_indexes={1: _app_link},
                   font_size=7)
     else:
@@ -457,9 +477,9 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
     add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
     if trademarks_dead:
-        td_body = [[t['office'], t['app'], t['mark'], _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_dead]
+        td_body = [[t['office'], t['app'], t['mark'], _img_cell(t), _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_dead]
         add_table(doc, tm_widths, tm_headers,
-                  td_body, risk_col_index=7,
+                  td_body, risk_col_index=8,
                   hyperlink_col_indexes={1: _app_link},
                   font_size=7)
 
