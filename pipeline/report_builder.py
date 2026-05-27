@@ -230,6 +230,8 @@ def build_step5_report(*, order_meta: dict,
 
     cover_rows = [
         ['Prepared for', order_meta.get('client_name', '')],
+        ['Brand Reference', order_meta.get('brand_reference', '') or '\u2014'],
+        ['Report Reference', order_meta.get('report_reference', '') or '\u2014'],
         ['Client Contact', f"{order_meta.get('client_first','')} {order_meta.get('client_last','')}".strip()],
         ['Client Email', order_meta.get('client_email', '')],
         ['Account Manager', order_meta.get('account_manager', '')],

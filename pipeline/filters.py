@@ -77,6 +77,14 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'domain_exact': '',
         'classes_csv': '',
         'search_date': '',
+        # Audit Operator Details block (added to Order Form template rows 58\u201364)
+        'brand_reference': '',
+        'report_reference': '',
+        'client_first': '',
+        'client_last': '',
+        'client_email': '',
+        'account_manager': '',
+        'prepared_by': '',
     }
     try:
         wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
@@ -97,7 +105,41 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'nature of business': 'nature',
         'designated countries': 'countries',
         'search platforms': 'search_platforms',
+        # Audit Operator Details block (added to Order Form template rows 58\u201364)
+        'brand reference': 'brand_reference',
+        'report reference': 'report_reference',
+        'client first name': 'client_first',
+        'client last name': 'client_last',
+        'client email address': 'client_email',
+        'account manager': 'account_manager',
+        'report prepared by': 'prepared_by',
     }
+
+    # Column-B values that are template instructions / CRM source-field mappings
+    # rather than real client data \u2014 treat as empty when seen, so the UI shows
+    # blank required fields instead of pre-filling literal "Contact First Name".
+    placeholder_values = {
+        'add field',
+        'add single field',
+        'add single field - usually word mark text',
+        'contact first name',
+        'contact last name',
+        'contact email address',
+        'deal owner',
+        'deal name',
+        'headshot',  # R42 placeholder for an image cell in the legacy template
+        'completed by tmh',
+        'completed by suntec of tmh',
+    }
+    def _real_value(b) -> str:
+        if b is None:
+            return ''
+        s = str(b).strip()
+        if s.lower() in placeholder_values:
+            return ''
+        if s.lower().startswith('add '):  # 'Add Field', 'Add Single Field...'
+            return ''
+        return s
     # Search-criteria block uses 'Exact Match' as a label, which appears
     # twice (once for Text, once for Domain) so we need to track which
     # context we're in via the preceding header row.
@@ -108,17 +150,19 @@ def extract_order_metadata(xlsx_path: str) -> dict:
     import re
     class_nums: list[int] = []
 
-    for r in range(1, min(ws.max_row + 1, 60)):
+    for r in range(1, min(ws.max_row + 1, 100)):
         a = ws.cell(row=r, column=1).value
         b = ws.cell(row=r, column=2).value
         if a is None:
             continue
         a_str = str(a).strip()
-        a_key = a_str.lower()
+        # Normalize: drop trailing required-field asterisk and surrounding spaces
+        # so 'Client first name *' matches 'client first name'.
+        a_key = a_str.rstrip('*').strip().lower()
 
         # Direct label-value matches
         if a_key in label_map:
-            out[label_map[a_key]] = (str(b).strip() if b else '')
+            out[label_map[a_key]] = _real_value(b)
             continue
 
         # Context switching for the dual 'Exact Match' labels
