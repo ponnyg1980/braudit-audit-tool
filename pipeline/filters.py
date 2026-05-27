@@ -51,6 +51,46 @@ def has_sic(sic_str: str, target_sic: str) -> bool:
     return target_sic in str(sic_str)
 
 
+def extract_specific_terms(xlsx_path: str) -> dict[int, str]:
+    """Read the Order Form sheet and pull the client's specific Goods & Services
+    terms per class.
+
+    The Braudit order form lists classes from row 34 onwards in the format:
+        Column A: '11 - Heating Components'
+        Column B: 'LED light strips; LED underwater lights; ...'
+
+    Parsing stops at the first empty A cell, or when A starts with anything
+    other than a class-number-prefixed entry (e.g. 'Date of Most Recent Search').
+    Returns a dict mapping class_number -> specific terms text.
+    """
+    import openpyxl
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+    if 'Order Form' not in wb.sheetnames:
+        wb.close()
+        return {}
+    ws = wb['Order Form']
+    out: dict[int, str] = {}
+    for r in range(34, 80):  # safety upper bound
+        a = ws.cell(row=r, column=1).value
+        b = ws.cell(row=r, column=2).value
+        if a is None:
+            # Empty row \u2014 keep looking a couple more in case of stray gaps,
+            # but a row with no class number ends the block.
+            if r > 34 and not out:
+                continue
+            break
+        a_str = str(a).strip()
+        # Match leading class number: e.g. '11 - Heating Components' or '11 \u2014 Heating'
+        m = re.match(r'^(\d{1,2})\b', a_str)
+        if not m:
+            break  # non-class row encountered (e.g. 'Date of Most Recent Search')
+        cls = int(m.group(1))
+        terms = str(b).strip() if b else ''
+        out[cls] = terms
+    wb.close()
+    return out
+
+
 # ---------- main pipeline ----------
 
 def read_sheets(xlsx_path: str) -> dict:

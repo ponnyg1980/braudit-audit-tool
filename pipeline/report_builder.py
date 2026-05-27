@@ -8,6 +8,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn, nsmap
 from docx.oxml import OxmlElement
 from datetime import date
+from .nice_classes import NICE_HEADINGS, parse_classes
 
 
 # ---------- styling helpers ----------
@@ -201,6 +202,32 @@ def build_step5_report(*, order_meta: dict,
     add_para(doc, 'Monitoring or Representation Report', bold=True, size=18, space_after=10)
 
     # ---- Cover / Order Detail Table ----
+    # Build the "Trademark Classes" value with UKIPO standardised definitions
+    class_nums = parse_classes(order_meta.get('classes', ''))
+    if class_nums:
+        class_lines = []
+        for n in class_nums:
+            heading = NICE_HEADINGS.get(n, '')
+            if heading:
+                class_lines.append(f"Class {n} \u2014 {heading}")
+            else:
+                class_lines.append(f"Class {n}")
+        classes_display = "\n".join(class_lines)
+    else:
+        classes_display = order_meta.get('classes', '')
+
+    # Build the "Specific Terms" value from the client's actual G&S per class
+    specific_terms = order_meta.get('specific_terms') or {}
+    if specific_terms:
+        st_lines = []
+        for n in class_nums or sorted(specific_terms.keys()):
+            terms = specific_terms.get(n) or specific_terms.get(str(n)) or ''
+            if terms:
+                st_lines.append(f"Class {n}: {terms}")
+        specific_terms_display = "\n".join(st_lines) if st_lines else '\u2014'
+    else:
+        specific_terms_display = '\u2014'
+
     cover_rows = [
         ['Prepared for', order_meta.get('client_name', '')],
         ['Client Contact', f"{order_meta.get('client_first','')} {order_meta.get('client_last','')}".strip()],
@@ -210,7 +237,8 @@ def build_step5_report(*, order_meta: dict,
         ['Date of Search', order_meta.get('search_date', '')],
         ['Type of Search', order_meta.get('search_type', 'Word')],
         ['Mark', order_meta.get('mark_label', '')],
-        ['Trademark Classes', order_meta.get('classes', '')],
+        ['Trademark Classes', classes_display],
+        ['Specific Terms', specific_terms_display],
         ['SIC Code', order_meta.get('sic', '')],
         ['Nature of Business', order_meta.get('nature', '')],
         ['Designated Countries', order_meta.get('countries', '')],
@@ -231,7 +259,13 @@ def build_step5_report(*, order_meta: dict,
                 set_cell_bg(cell, '1F3864')
                 run(p, txt, bold=True, color='FFFFFF', size=10)
             else:
-                run(p, str(txt), size=10)
+                # Multi-line cell support \u2014 each \n becomes a paragraph
+                lines = str(txt).split('\n')
+                run(p, lines[0], size=10)
+                for line in lines[1:]:
+                    p2 = cell.add_paragraph()
+                    p2.paragraph_format.space_after = Pt(0)
+                    run(p2, line, size=10)
 
     # ---- Section 1 ----
     add_heading(doc, '1. Report Overview', level=1)
@@ -318,17 +352,31 @@ def build_step5_report(*, order_meta: dict,
     else:
         add_para(doc, 'No social results flagged.', italic=True, color='595959')
 
+    # Helper: build the per-row Class cell value as "11 \u2014 heading\n12 \u2014 heading"
+    def _class_cell(cls_str):
+        nums = parse_classes(cls_str)
+        if not nums:
+            return str(cls_str or '')
+        lines = []
+        for n in nums:
+            h = NICE_HEADINGS.get(n, '')
+            if h:
+                lines.append(f"{n} \u2014 {h}")
+            else:
+                lines.append(str(n))
+        return "\n".join(lines)
+
     # 3e Trademarks Live
     doc.add_page_break()
     add_heading(doc, '3e. Trademark Search Results \u2014 Live', level=1)
-    add_para(doc, 'Live trademark records (Registered and Pending) where the mark is in scope and the recital touches one or more of the client\u2019s classes. Sorted by initial-review score descending.', size=10)
+    add_para(doc, 'Live trademark records (Registered and Pending) where the mark is in scope and the recital touches one or more of the client\u2019s classes. Class definitions are the UKIPO standardised Nice Classification headings. Sorted by initial-review score descending.', size=10)
     if trademarks_live:
-        tl_body = [[t['app'], t['mark'], t['classes'], t['type'], t['owner'], t['status'], t['risk']] for t in trademarks_live]
-        add_table(doc, [1.0, 1.4, 0.6, 1.0, 2.0, 0.9, 0.9],
-                  ['App #', 'Mark Text', 'Class', 'Type', 'Owner', 'Status', 'Risk'],
+        tl_body = [[t['app'], t['mark'], _class_cell(t['classes']), t['type'], t['owner'], t['status'], t['risk']] for t in trademarks_live]
+        add_table(doc, [0.8, 1.2, 1.7, 0.6, 1.5, 0.7, 0.5],
+                  ['App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk'],
                   tl_body, risk_col_index=6,
                   hyperlink_col_indexes={0: lambda row: f"https://tsdr.uspto.gov/statusview/sn{row[0]}"},
-                  font_size=8)
+                  font_size=7)
     else:
         add_para(doc, 'No live trademarks flagged.', italic=True, color='595959')
 
@@ -337,12 +385,12 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
     add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
     if trademarks_dead:
-        td_body = [[t['app'], t['mark'], t['classes'], t['type'], t['owner'], t['status'], t['risk']] for t in trademarks_dead]
-        add_table(doc, [1.0, 1.4, 0.6, 1.0, 2.0, 0.9, 0.9],
-                  ['App #', 'Mark Text', 'Class', 'Type', 'Owner', 'Status', 'Risk'],
+        td_body = [[t['app'], t['mark'], _class_cell(t['classes']), t['type'], t['owner'], t['status'], t['risk']] for t in trademarks_dead]
+        add_table(doc, [0.8, 1.2, 1.7, 0.6, 1.5, 0.7, 0.5],
+                  ['App #', 'Mark Text', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk'],
                   td_body, risk_col_index=6,
                   hyperlink_col_indexes={0: lambda row: f"https://tsdr.uspto.gov/statusview/sn{row[0]}"},
-                  font_size=8)
+                  font_size=7)
 
     # ---- Footer message ----
     doc.add_page_break()
