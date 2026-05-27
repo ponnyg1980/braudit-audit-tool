@@ -6,13 +6,14 @@ Internal tool for The Trademark Helpline / Braudit. Run with:
 from __future__ import annotations
 import os
 import tempfile
+import hashlib
 import streamlit as st
 from datetime import date
 
 from pipeline.filters import (
     read_sheets, process_trademarks, process_companies,
     process_google, process_domains, process_social,
-    extract_specific_terms,
+    extract_specific_terms, extract_order_metadata,
 )
 from pipeline.report_builder import build_step5_report
 
@@ -57,8 +58,53 @@ st.title('🔍 Braudit Audit Tool')
 st.caption('Steps 2–5 of the audit pipeline · de-duplicate, exclude, score, generate report.')
 st.divider()
 
+# Step 1: upload + auto-parse the Order Form so the form fields can pre-fill.
+# The uploader sits OUTSIDE the form so Streamlit reruns on file change.
+st.subheader('1. Upload scraped-results spreadsheet')
+uploaded = st.file_uploader(
+    'Upload the scraped-results .xlsx file *',
+    type=['xlsx'],
+    help='The workbook produced by the Braudit scrape job. The app reads the Order Form sheet and pre-fills the search criteria below.',
+)
+
+# Persist the uploaded file path + parsed metadata across reruns so the form
+# fields stay populated as the operator types into the manual fields.
+def _ingest_upload(uploaded_file):
+    raw = uploaded_file.getvalue()
+    digest = hashlib.sha256(raw).hexdigest()
+    if st.session_state.get('uploaded_digest') == digest:
+        return  # already ingested this file
+    # Save the bytes to a temp file we can re-read on each rerun
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+    tmp.write(raw); tmp.close()
+    st.session_state['uploaded_digest'] = digest
+    st.session_state['uploaded_path'] = tmp.name
+    st.session_state['uploaded_name'] = uploaded_file.name
+    st.session_state['order_meta'] = extract_order_metadata(tmp.name)
+    st.session_state['specific_terms'] = extract_specific_terms(tmp.name)
+
+if uploaded is not None:
+    _ingest_upload(uploaded)
+    meta = st.session_state.get('order_meta') or {}
+    if meta.get('client_name'):
+        st.success(
+            f"📋 Order Form parsed: **{meta['client_name']}** · classes {meta.get('classes_csv','—')} "
+            f"· exact match \"{meta.get('exact_match','—')}\""
+        )
+    else:
+        st.warning('Uploaded \u2014 but the Order Form sheet was not found or could not be read. Fill the fields below manually.')
+else:
+    st.info('Upload a scraped-results spreadsheet to pre-fill the search criteria below.')
+
+st.divider()
+
+# All the parsed defaults flow into the form via session_state.
+meta = st.session_state.get('order_meta') or {}
+
 with st.form('audit_form', clear_on_submit=False):
-    st.subheader('Client & order details')
+
+    st.subheader('2. Audit operator details')
+    st.caption('These are the only fields you have to type \u2014 they\u2019re not in the spreadsheet today.')
     c1, c2 = st.columns(2)
     with c1:
         client_first = st.text_input('Client first name *')
@@ -66,25 +112,27 @@ with st.form('audit_form', clear_on_submit=False):
         account_manager = st.text_input('Account manager *')
     with c2:
         client_last = st.text_input('Client last name *')
-        client_name = st.text_input('Client / company name *', help="e.g. UK Performance Parts Ltd")
         prepared_by = st.text_input('Report prepared by *')
 
-    st.subheader('Search criteria')
+    st.subheader('3. Search criteria from your Order Form')
+    st.caption('Pre-filled from the spreadsheet. Edit any field below to override the value for this audit only.')
     c3, c4 = st.columns(2)
     with c3:
-        exact = st.text_input('Exact match search term *', value='Stealth LED')
-        classes_text = st.text_input('Trademark classes (comma-separated)', value='11, 12, 35')
-        sic_code = st.text_input('Client SIC code', value='45320')
+        client_name = st.text_input('Client / company name *', value=meta.get('client_name', ''), help='From Order Form R5.')
+        exact = st.text_input('Exact match search term *', value=meta.get('exact_match', ''), help='From Order Form R14.')
+        classes_text = st.text_input('Trademark classes (comma-separated) *', value=meta.get('classes_csv', ''), help='From Order Form G&S Classes rows.')
+        sic_code = st.text_input('Client SIC code *', value=meta.get('sic', ''), help='From Order Form R8.')
     with c4:
-        similar = st.text_input('Similar match search term', value='Stealth')
-        countries = st.text_input('Designated countries', value='USA Office')
-        nature = st.text_input('Nature of business', value='Retail trade of motor vehicle parts and accessories')
+        deal_id = st.text_input('Deal ID', value=meta.get('deal_id', ''), help='From Order Form R6.')
+        similar = st.text_input('Similar match (Starts With) search term', value=meta.get('starts_with', ''), help='From Order Form R15.')
+        countries = st.text_input('Designated countries', value=meta.get('countries', ''), help='From Order Form R10.')
+        nature = st.text_input('Nature of business', value=meta.get('nature', ''), help='From Order Form R9.')
 
-    st.subheader('Scraped data')
-    uploaded = st.file_uploader(
-        'Upload the scraped-results .xlsx file *',
-        type=['xlsx'],
-        help='The workbook produced by the Braudit scrape job, with the standard sheet names (Trademarks, Companies, Google, Domains, Social).'
+    search_platforms = st.text_area(
+        'Search platforms',
+        value=meta.get('search_platforms', ''),
+        help='From Order Form R11 \u2014 comma-separated list of platforms the scrape covered.',
+        height=68,
     )
 
     submitted = st.form_submit_button('▶ Run Audit', type='primary', use_container_width=True)
@@ -98,34 +146,29 @@ if submitted:
         ('Client first name', client_first), ('Client last name', client_last),
         ('Client email', client_email), ('Account manager', account_manager),
         ('Report prepared by', prepared_by), ('Client / company name', client_name),
-        ('Exact match search term', exact),
+        ('Exact match search term', exact), ('Trademark classes', classes_text),
+        ('Client SIC code', sic_code),
     ]:
         if not val.strip():
             missing.append(label)
-    if uploaded is None:
+    if uploaded is None or 'uploaded_path' not in st.session_state:
         missing.append('Scraped data .xlsx file')
 
     if missing:
         st.error('Please complete: ' + ', '.join(missing))
         st.stop()
 
-    # Save upload to a tempfile so openpyxl can read it from disk
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp:
-        tmp.write(uploaded.read())
-        tmp_path = tmp.name
+    tmp_path = st.session_state['uploaded_path']
+    specific_terms = st.session_state.get('specific_terms') or {}
 
     try:
         with st.spinner('Reading scraped data...'):
             sheets = read_sheets(tmp_path)
-            specific_terms = extract_specific_terms(tmp_path)
 
-        # Parse classes
         target_classes = tuple(
             int(x.strip()) for x in classes_text.split(',') if x.strip().isdigit()
         ) or (11, 12, 35)
 
-        # Use the exact-match search term as the mark root (uppercase)
-        # Strip any descriptive suffix to get to the root word for filtering
         root_word = exact.strip().split()[0].upper() if exact.strip() else 'STEALTH'
 
         with st.spinner('Step 2: de-duplicating and applying exclusions...'):
@@ -147,6 +190,7 @@ if submitted:
         tm_dead = [t for t in tm_all if t['risk'] == 'Negligible']
 
         with st.spinner('Step 5: building the report...'):
+            search_date_value = (meta.get('search_date') or '').strip() or date.today().strftime('%d %B %Y')
             order_meta = {
                 'client_name': client_name,
                 'client_first': client_first,
@@ -154,7 +198,8 @@ if submitted:
                 'client_email': client_email,
                 'account_manager': account_manager,
                 'prepared_by': prepared_by,
-                'search_date': date.today().strftime('%d %B %Y'),
+                'deal_id': deal_id,
+                'search_date': search_date_value,
                 'search_type': 'Word',
                 'mark_label': f'Exact: {exact}   ·   Similar: {similar}' if similar else f'Exact: {exact}',
                 'exact': exact, 'similar': similar,
@@ -162,6 +207,7 @@ if submitted:
                 'sic': sic_code,
                 'nature': nature,
                 'countries': countries,
+                'search_platforms': search_platforms,
                 'filtering_rules': (
                     f'Mark scope: exact {root_word} or "{root_word} " + descriptor; '
                     f'class touch any of {classes_text}; '
@@ -192,7 +238,6 @@ if submitted:
 
         st.success('✅ Audit complete.')
 
-        # --- Summary ---
         st.subheader('Summary of flagged results')
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric('Live Trademarks', len(tm_live))
@@ -201,14 +246,12 @@ if submitted:
         m4.metric('Domains', len(domains))
         m5.metric('Google + Social', len(google) + len(social))
 
-        # Risk band breakdown for live trademarks
         from collections import Counter
         risk_dist = Counter(t['risk'] for t in tm_live)
         st.write('**Live trademark risk distribution:** ' + ', '.join(
             f'{k}: {v}' for k, v in risk_dist.most_common()
         ) if risk_dist else '_no live trademarks flagged_')
 
-        # --- Download ---
         st.divider()
         st.subheader('Download the report')
         safe_client = ''.join(c if c.isalnum() else '_' for c in client_name)[:40]
@@ -221,7 +264,6 @@ if submitted:
             use_container_width=True,
         )
 
-        # Show preview tables
         with st.expander('Preview — Live trademarks'):
             st.dataframe([
                 {k: v for k, v in t.items() if k in ('app','mark','classes','type','owner','status','score','risk')}
@@ -234,9 +276,10 @@ if submitted:
                     for t in tm_dead
                 ], use_container_width=True)
 
-    finally:
-        os.unlink(tmp_path)
+    except Exception as e:
+        st.error(f'Audit failed: {e}')
+        raise
 
 # ---------- footer ----------
 st.divider()
-st.caption('Braudit Audit Tool · v1.0 · Internal use only · Steps 2–5 only (Step 6 forensic audit coming in v2)')
+st.caption('Braudit Audit Tool · v1.1 · Internal use only · Steps 2–5 only (Step 6 forensic audit coming in v2)')
