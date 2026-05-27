@@ -51,6 +51,124 @@ def has_sic(sic_str: str, target_sic: str) -> bool:
     return target_sic in str(sic_str)
 
 
+def extract_order_metadata(xlsx_path: str) -> dict:
+    """Read the Order Form sheet and return a dict of order-level metadata
+    that can be used to pre-populate the audit UI.
+
+    The parser is label-driven (matches against column A text, case-insensitive,
+    whitespace-stripped) rather than row-driven, so changes to the template
+    layout don't break it as long as the labels stay the same.
+
+    Returns a dict with whatever it finds, falling back to '' for missing
+    fields. Callers should treat the returned values as defaults and let the
+    UI surface them for the operator to confirm or override.
+    """
+    import openpyxl
+    out = {
+        'client_name': '',
+        'deal_id': '',
+        'word_or_image': '',
+        'sic': '',
+        'nature': '',
+        'countries': '',
+        'search_platforms': '',
+        'exact_match': '',
+        'starts_with': '',
+        'domain_exact': '',
+        'classes_csv': '',
+        'search_date': '',
+    }
+    try:
+        wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+    except Exception:
+        return out
+    if 'Order Form' not in wb.sheetnames:
+        wb.close()
+        return out
+    ws = wb['Order Form']
+
+    # Map of expected labels (lower-case, stripped) -> key in our out dict.
+    # Labels are matched as-is from column A; column B is the value.
+    label_map = {
+        'client name': 'client_name',
+        'deal id': 'deal_id',
+        'word or image': 'word_or_image',
+        'sic': 'sic',
+        'nature of business': 'nature',
+        'designated countries': 'countries',
+        'search platforms': 'search_platforms',
+    }
+    # Search-criteria block uses 'Exact Match' as a label, which appears
+    # twice (once for Text, once for Domain) so we need to track which
+    # context we're in via the preceding header row.
+    text_ctx = False
+    domain_ctx = False
+
+    # Class list rows start with a class number like '11 - Heating Components'.
+    import re
+    class_nums: list[int] = []
+
+    for r in range(1, min(ws.max_row + 1, 60)):
+        a = ws.cell(row=r, column=1).value
+        b = ws.cell(row=r, column=2).value
+        if a is None:
+            continue
+        a_str = str(a).strip()
+        a_key = a_str.lower()
+
+        # Direct label-value matches
+        if a_key in label_map:
+            out[label_map[a_key]] = (str(b).strip() if b else '')
+            continue
+
+        # Context switching for the dual 'Exact Match' labels
+        if 'search criteria' in a_key and 'text' in a_key:
+            text_ctx, domain_ctx = True, False
+            continue
+        if 'search criteria' in a_key and 'domain' in a_key:
+            text_ctx, domain_ctx = False, True
+            continue
+        if 'image search' in a_key or 'g&s classes' in a_key:
+            text_ctx = domain_ctx = False
+            continue
+
+        if a_key == 'exact match':
+            v = (str(b).strip() if b else '')
+            if text_ctx:
+                out['exact_match'] = v
+            elif domain_ctx:
+                out['domain_exact'] = v
+            continue
+        if a_key == 'starts with' and text_ctx:
+            out['starts_with'] = (str(b).strip() if b else '')
+            continue
+
+        # Class row: 'NN - Description'
+        m = re.match(r'^(\d{1,2})\b', a_str)
+        if m and r >= 33:  # G&S Classes block starts around R33
+            class_nums.append(int(m.group(1)))
+            continue
+
+        # Date row \u2014 only accept actual date-typed values. The current
+        # Order Form template uses placeholder strings ('Date Report Produced',
+        # 'Completed by TMH') in this block; if the value isn't a real date,
+        # we leave it blank and the UI defaults to today.
+        if 'date of most recent search' in a_key:
+            from datetime import date, datetime
+            candidates = [b, ws.cell(row=r+1, column=1).value, ws.cell(row=r+1, column=2).value]
+            for cand in candidates:
+                if isinstance(cand, (date, datetime)):
+                    out['search_date'] = cand.strftime('%d %B %Y')
+                    break
+            continue
+
+    if class_nums:
+        out['classes_csv'] = ', '.join(str(n) for n in class_nums)
+
+    wb.close()
+    return out
+
+
 def extract_specific_terms(xlsx_path: str) -> dict[int, str]:
     """Read the Order Form sheet and pull the client's specific Goods & Services
     terms per class.
