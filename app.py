@@ -12,6 +12,7 @@ from datetime import date
 from pipeline.filters import (
     read_sheets, process_trademarks, process_companies,
     process_google, process_domains, process_social,
+    extract_specific_terms,
 )
 from pipeline.report_builder import build_step5_report
 
@@ -116,6 +117,7 @@ if submitted:
     try:
         with st.spinner('Reading scraped data...'):
             sheets = read_sheets(tmp_path)
+            specific_terms = extract_specific_terms(tmp_path)
 
         # Parse classes
         target_classes = tuple(
@@ -166,6 +168,7 @@ if submitted:
                     f'SIC = {sic_code} (companies); '
                     'dead trademarks retained but tagged Negligible.'
                 ),
+                'specific_terms': specific_terms,
             }
             raw_counts = {
                 'google_raw': max(0, len(sheets.get('Google', [[]])) - 1),
