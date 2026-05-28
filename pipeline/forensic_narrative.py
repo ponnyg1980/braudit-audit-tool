@@ -33,8 +33,50 @@ from .forensic import VerifiedRecord
 # Opus 4.6 produces marginally better prose at ~5x the price; we route to
 # Opus only when an audit is explicitly escalated (Phase B Run Card flag).
 DEFAULT_MODEL = 'claude-sonnet-4-6'
-DEFAULT_MAX_TOKENS_PER_RECORD = 220
-DEFAULT_MAX_TOKENS_SUMMARY = 1400
+DEFAULT_MAX_TOKENS_PER_RECORD = 260
+# Summary call must accommodate executive_summary (300-500w) +
+# final_recommendation (250-400w) + recommended_specification or
+# recommended_actions (variable). 4000 tokens covers the worst case
+# comfortably and leaves room for JSON overhead and newlines.
+DEFAULT_MAX_TOKENS_SUMMARY = 4000
+
+
+def _robust_json_loads(raw: str) -> dict:
+    """Parse JSON returned by the LLM, tolerating common quirks.
+
+    Handles:
+      * ```json / ``` code fences around the JSON
+      * Leading or trailing prose around the JSON object
+      * Truncated/malformed JSON \u2014 by extracting the longest
+        prefix that parses cleanly via JSONDecoder.raw_decode().
+    """
+    cleaned = (raw or '').strip()
+    if cleaned.startswith('```'):
+        nl = cleaned.find('\n')
+        if nl >= 0:
+            cleaned = cleaned[nl + 1:]
+        if cleaned.endswith('```'):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    # Pass 1: parse as-is
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    # Pass 2: locate the first '{' and try raw_decode from there
+    start = cleaned.find('{')
+    if start < 0:
+        raise json.JSONDecodeError('No JSON object found in LLM response', cleaned, 0)
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    raise json.JSONDecodeError(
+        'Failed to parse LLM response as JSON (possibly truncated)',
+        cleaned, 0,
+    )
 
 
 class ReportType(str, Enum):
@@ -71,7 +113,7 @@ def _risk_band_for(score: int) -> str:
 def score_record(record: VerifiedRecord, *,
                  client_classes: list[int],
                  client_mark: str,
-                 client_jurisdiction: str = 'US') -> ForensicScore:
+                 client_jurisdiction: str | list[str] = 'US') -> ForensicScore:
     """Apply the four-criteria forensic rubric (same one in the Run Card).
 
     Pure deterministic Python — no LLM, no randomness, no API calls. The
@@ -134,21 +176,32 @@ def score_record(record: VerifiedRecord, *,
         age_proof_of_use = 1
         notes.append('Status uncertain — manual verification recommended')
 
-    # 4. Region / jurisdiction (0–2)
+    # 4. Region / jurisdiction (0–2). Now supports a LIST of client
+    # jurisdictions: highest score if record matches ANY client jurisdiction.
     rec_juris = (record.jurisdiction or '').upper()
-    cli_juris = (client_jurisdiction or '').upper()
-    if rec_juris and rec_juris == cli_juris:
+    if isinstance(client_jurisdiction, str):
+        cli_juris_list = [client_jurisdiction.upper()] if client_jurisdiction else []
+    else:
+        cli_juris_list = [str(j).upper() for j in (client_jurisdiction or []) if j]
+    cli_juris_display = ', '.join(cli_juris_list) if cli_juris_list else '(none)'
+
+    if rec_juris and rec_juris in cli_juris_list:
         region = 2
-        notes.append(f'Same jurisdiction as client filing ({cli_juris})')
-    elif rec_juris and cli_juris and rec_juris in ('EU', 'WO', 'IR') and cli_juris in ('US', 'GB', 'EU'):
+        notes.append(f'Same jurisdiction as client filing ({rec_juris} \u2208 {{{cli_juris_display}}})')
+    elif rec_juris and cli_juris_list and rec_juris in ('EU', 'WO', 'IR'):
+        # Regional / international rights overlap most national filings
         region = 1
-        notes.append(f'International/regional right ({rec_juris}) may extend to client jurisdiction ({cli_juris})')
+        notes.append(f'International/regional right ({rec_juris}) may extend to client jurisdictions ({cli_juris_display})')
+    elif rec_juris and cli_juris_list and ('EU' in cli_juris_list and rec_juris in ('AT','BE','BG','HR','CY','CZ','DK','EE','FI','FR','DE','GR','HU','IE','IT','LV','LT','LU','MT','NL','PL','PT','RO','SK','SI','ES','SE')):
+        # Client has EUIPO filing, record is from an EU member state
+        region = 2
+        notes.append(f'Client has EU coverage and record is from EU member state ({rec_juris})')
     elif not rec_juris:
         region = 1
         notes.append('Jurisdiction unknown')
     else:
         region = 0
-        notes.append(f'Different jurisdiction ({rec_juris} vs client {cli_juris})')
+        notes.append(f'Different jurisdiction ({rec_juris} vs client {cli_juris_display})')
 
     total = classes_terms + mark_type + age_proof_of_use + region
     return ForensicScore(
@@ -294,16 +347,9 @@ def generate_per_record_commentary(client: NarrativeClient, *,
 
     raw = client._call(
         system=system, user=user,
-        max_tokens=len(records) * DEFAULT_MAX_TOKENS_PER_RECORD + 500,
+        max_tokens=len(records) * DEFAULT_MAX_TOKENS_PER_RECORD + 800,
     )
-    # Be forgiving: sometimes the model wraps JSON in ```json fences
-    cleaned = raw.strip()
-    if cleaned.startswith('```'):
-        # Strip leading fence and language hint
-        cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
-        if cleaned.endswith('```'):
-            cleaned = cleaned[:-3]
-    return json.loads(cleaned.strip())
+    return _robust_json_loads(raw)
 
 
 # ---------- Executive summary + final recommendation ----------
@@ -387,12 +433,7 @@ def generate_summary(client: NarrativeClient, *,
         user=user,
         max_tokens=DEFAULT_MAX_TOKENS_SUMMARY,
     )
-    cleaned = raw.strip()
-    if cleaned.startswith('```'):
-        cleaned = cleaned.split('\n', 1)[1] if '\n' in cleaned else cleaned[3:]
-        if cleaned.endswith('```'):
-            cleaned = cleaned[:-3]
-    return json.loads(cleaned.strip())
+    return _robust_json_loads(raw)
 
 
 # ---------- Top-level orchestration ----------
@@ -420,16 +461,51 @@ class ForensicReport:
         }
 
 
+def _fallback_summary(report_type: ReportType, error: str) -> dict:
+    """Minimal summary dict so the appendix renders even when the
+    LLM summary call fails (truncated JSON, API timeout, etc.)."""
+    base = {
+        'executive_summary': (
+            '[Executive summary generation failed.] '
+            'The deterministic forensic scoring (see Section 4) is still '
+            f'valid and the per-record cards below have been preserved. '
+            f'Cause: {error}.'
+        ),
+        'final_recommendation': (
+            '[Final recommendation generation failed.] '
+            'Specialist counsel review of the scoring table and per-record '
+            'cards is recommended.'
+        ),
+    }
+    if report_type == ReportType.PRE_APPLICATION:
+        base.update({
+            'viability_score': 0,
+            'viability_label': 'Assessment unavailable',
+            'recommended_specification': {},
+        })
+    else:
+        base.update({
+            'enforcement_priority': 'Unknown',
+            'recommended_actions': [],
+        })
+    return base
+
+
 def run_forensic_layer(*, signa_records: list[VerifiedRecord],
                        client_brand: dict,
                        report_type: ReportType,
                        narrative_client: NarrativeClient,
                        client_classes: list[int],
                        client_mark: str,
-                       client_jurisdiction: str = 'US') -> ForensicReport:
+                       client_jurisdiction: str | list[str] = 'US') -> ForensicReport:
     """Top-level orchestrator. Scores all records, generates per-record
     commentary in one batched call, generates executive summary in one call,
-    returns a ForensicReport ready for docx rendering."""
+    returns a ForensicReport ready for docx rendering.
+
+    If the executive summary fails (e.g. JSON parse error from a truncated
+    LLM response), the audit still completes with a fallback summary so the
+    user gets a usable appendix instead of a hard crash.
+    """
     from datetime import datetime
     started = datetime.utcnow().isoformat() + 'Z'
 
@@ -439,16 +515,27 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
         for r in signa_records
     ]
 
-    commentaries = generate_per_record_commentary(
-        narrative_client,
-        records=signa_records, scores=scores,
-        report_type=report_type, client_brand=client_brand,
-    )
-    summary = generate_summary(
-        narrative_client,
-        records=signa_records, scores=scores,
-        report_type=report_type, client_brand=client_brand,
-    )
+    # Per-record commentary failure also falls back gracefully.
+    try:
+        commentaries = generate_per_record_commentary(
+            narrative_client,
+            records=signa_records, scores=scores,
+            report_type=report_type, client_brand=client_brand,
+        )
+    except Exception as exc:
+        commentaries = {
+            f'record_{i}': f'[Commentary generation failed: {exc}]'
+            for i in range(len(signa_records))
+        }
+
+    try:
+        summary = generate_summary(
+            narrative_client,
+            records=signa_records, scores=scores,
+            report_type=report_type, client_brand=client_brand,
+        )
+    except Exception as exc:
+        summary = _fallback_summary(report_type, str(exc))
 
     return ForensicReport(
         report_type=report_type,
