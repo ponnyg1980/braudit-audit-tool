@@ -23,6 +23,12 @@ from pipeline.forensic_narrative import (
     NarrativeClient, ReportType, run_forensic_layer,
 )
 from pipeline.forensic_report import build_forensic_appendix
+from pipeline.jurisdictions import (
+    all_labels as all_jurisdiction_labels,
+    labels_for_codes as juris_labels_for_codes,
+    codes_for_labels as juris_codes_for_labels,
+    parse_country_string,
+)
 
 
 # ---------- page setup ----------
@@ -99,7 +105,7 @@ if uploaded is not None:
             f"· exact match \"{meta.get('exact_match','—')}\""
         )
     else:
-        st.warning('Uploaded \u2014 but the Order Form sheet was not found or could not be read. Fill the fields below manually.')
+        st.warning('Uploaded — but the Order Form sheet was not found or could not be read. Fill the fields below manually.')
 else:
     st.info('Upload a scraped-results spreadsheet to pre-fill the search criteria below.')
 
@@ -111,7 +117,7 @@ meta = st.session_state.get('order_meta') or {}
 with st.form('audit_form', clear_on_submit=False):
 
     st.subheader('2. Audit operator details')
-    st.caption('Pre-filled from the spreadsheet (Order Form rows 58\u201364). Edit any field to override for this audit only. The two reference fields are optional \u2014 they don\u2019t affect the audit but flow through to the report header.')
+    st.caption('Pre-filled from the spreadsheet (Order Form rows 58–64). Edit any field to override for this audit only. The two reference fields are optional — they don’t affect the audit but flow through to the report header.')
     # Optional reference fields (rows 58/59) shown first
     c0a, c0b = st.columns(2)
     with c0a:
@@ -126,7 +132,7 @@ with st.form('audit_form', clear_on_submit=False):
             value=meta.get('report_reference', ''),
             help='Optional. From Order Form R59. Usually the Deal Name.',
         )
-    # Required operator fields (rows 60\u201364)
+    # Required operator fields (rows 60–64)
     c1, c2 = st.columns(2)
     with c1:
         client_first = st.text_input(
@@ -173,7 +179,7 @@ with st.form('audit_form', clear_on_submit=False):
     search_platforms = st.text_area(
         'Search platforms',
         value=meta.get('search_platforms', ''),
-        help='From Order Form R11 \u2014 comma-separated list of platforms the scrape covered.',
+        help='From Order Form R11 — comma-separated list of platforms the scrape covered.',
         height=68,
     )
 
@@ -376,7 +382,7 @@ if step5:
             + '. Ask the admin to add them in **Manage app → Secrets** before running.'
         )
 
-    f_c1, f_c2, f_c3 = st.columns([2, 2, 1.4])
+    f_c1, f_c2 = st.columns([1, 1])
     with f_c1:
         report_type_label = st.radio(
             'Report type',
@@ -397,13 +403,24 @@ if step5:
             help='Top N live trademarks by score will be verified via Signa and forensically commented. '
                  'Higher N → higher API cost. 10 is a sensible default.',
         )
-    with f_c3:
-        client_jurisdiction = st.selectbox(
-            'Client jurisdiction',
-            options=['US', 'GB', 'EU', 'WO'],
-            index=0,
-            help='Client\u2019s primary filing jurisdiction. Used by the scoring rubric for the region criterion.',
-        )
+
+    # Multi-select jurisdictions — default to whatever we parsed out
+    # of the Order Form’s 'Designated countries' field, falling back
+    # to United States if parsing returns nothing.
+    parsed_codes = parse_country_string(step5.get('countries', '') or '')
+    if not parsed_codes:
+        parsed_codes = ['US']
+    default_jurisdiction_labels = juris_labels_for_codes(parsed_codes)
+    selected_jurisdiction_labels = st.multiselect(
+        'Client jurisdictions',
+        options=all_jurisdiction_labels(),
+        default=default_jurisdiction_labels,
+        help='All jurisdictions the client has filed (or plans to file) in. '
+             'Pre-populated from the Designated countries field above; add or '
+             'remove as needed. Used by the scoring rubric for the region '
+             'criterion — records in any of these jurisdictions score highest.',
+    )
+    client_jurisdictions = juris_codes_for_labels(selected_jurisdiction_labels)
 
     forensic_clicked = st.button(
         '▶ Run Forensic Audit',
@@ -427,7 +444,7 @@ if step5:
             # TemmyDB is Braudit's source of truth for UK records (BR-002).
             # Optional: if the temmy_api_key secret is not set, UK records
             # skip the Temmy primary path and fall back to the Signa
-            # Brexit-clone proxy for UK009xxx numbers only.
+            # Brexit-clone proxy for UK009xxxxxxxx numbers only.
             temmy_client = (
                 TemmyClient(api_key=st.secrets['temmy_api_key'])
                 if st.secrets.get('temmy_api_key') else None
@@ -460,7 +477,9 @@ if step5:
             prog.empty()
 
             verified_count = sum(1 for r in signa_records if r.verified)
-            # Per-source breakdown — useful for diagnosing UK coverage at a glance.
+            # Per-source breakdown for the BR-001/BR-002 fix — lets operators
+            # see at a glance which records came from Signa, Temmy or the
+            # Brexit-clone proxy.
             by_source: dict = {}
             for r in signa_records:
                 by_source[r.verification_source] = by_source.get(r.verification_source, 0) + 1
@@ -471,10 +490,14 @@ if step5:
             )
 
             # --- Phase 2: scoring + narrative (one batched LLM call per pass) ---
+            if not client_jurisdictions:
+                # Always supply at least US so the scoring rubric has something
+                # to compare record jurisdictions against.
+                client_jurisdictions = ['US']
             client_brand = {
                 'mark': step5['exact'],
                 'classes': client_classes,
-                'jurisdiction': client_jurisdiction,
+                'jurisdictions': client_jurisdictions,
                 'brand_reference': step5['order_meta'].get('brand_reference', ''),
                 'countries': step5['countries'],
             }
@@ -486,7 +509,7 @@ if step5:
                     narrative_client=narrative_client,
                     client_classes=client_classes,
                     client_mark=step5['exact'],
-                    client_jurisdiction=client_jurisdiction,
+                    client_jurisdiction=client_jurisdictions,
                 )
 
             # --- Phase 3: render docx ---
