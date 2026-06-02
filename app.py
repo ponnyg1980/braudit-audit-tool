@@ -18,16 +18,11 @@ from pipeline.filters import (
 )
 from pipeline.report_builder import build_step5_report
 from pipeline.forensic import SignaClient, verify_records
+from pipeline.temmy import TemmyClient
 from pipeline.forensic_narrative import (
     NarrativeClient, ReportType, run_forensic_layer,
 )
 from pipeline.forensic_report import build_forensic_appendix
-from pipeline.jurisdictions import (
-    all_labels as all_jurisdiction_labels,
-    labels_for_codes as juris_labels_for_codes,
-    codes_for_labels as juris_codes_for_labels,
-    parse_country_string,
-)
 
 
 # ---------- page setup ----------
@@ -381,7 +376,7 @@ if step5:
             + '. Ask the admin to add them in **Manage app → Secrets** before running.'
         )
 
-    f_c1, f_c2 = st.columns([1, 1])
+    f_c1, f_c2, f_c3 = st.columns([2, 2, 1.4])
     with f_c1:
         report_type_label = st.radio(
             'Report type',
@@ -400,26 +395,15 @@ if step5:
             'Records to forensically audit',
             min_value=1, max_value=max(1, live_count), value=default_top_n, step=1,
             help='Top N live trademarks by score will be verified via Signa and forensically commented. '
-                 'Higher N \u2192 higher API cost. 10 is a sensible default.',
+                 'Higher N → higher API cost. 10 is a sensible default.',
         )
-
-    # Multi-select jurisdictions \u2014 default to whatever we parsed out
-    # of the Order Form\u2019s 'Designated countries' field, falling back
-    # to United States if parsing returns nothing.
-    parsed_codes = parse_country_string(step5.get('countries', '') or '')
-    if not parsed_codes:
-        parsed_codes = ['US']
-    default_jurisdiction_labels = juris_labels_for_codes(parsed_codes)
-    selected_jurisdiction_labels = st.multiselect(
-        'Client jurisdictions',
-        options=all_jurisdiction_labels(),
-        default=default_jurisdiction_labels,
-        help='All jurisdictions the client has filed (or plans to file) in. '
-             'Pre-populated from the Designated countries field above; add or '
-             'remove as needed. Used by the scoring rubric for the region '
-             'criterion \u2014 records in any of these jurisdictions score highest.',
-    )
-    client_jurisdictions = juris_codes_for_labels(selected_jurisdiction_labels)
+    with f_c3:
+        client_jurisdiction = st.selectbox(
+            'Client jurisdiction',
+            options=['US', 'GB', 'EU', 'WO'],
+            index=0,
+            help='Client\u2019s primary filing jurisdiction. Used by the scoring rubric for the region criterion.',
+        )
 
     forensic_clicked = st.button(
         '▶ Run Forensic Audit',
@@ -440,6 +424,14 @@ if step5:
             # Build clients
             signa_client = SignaClient(api_key=st.secrets['signa_api_key'])
             narrative_client = NarrativeClient(api_key=st.secrets['anthropic_api_key'])
+            # TemmyDB is Braudit's source of truth for UK records (BR-002).
+            # Optional: if the temmy_api_key secret is not set, UK records
+            # skip the Temmy primary path and fall back to the Signa
+            # Brexit-clone proxy for UK009xxx numbers only.
+            temmy_client = (
+                TemmyClient(api_key=st.secrets['temmy_api_key'])
+                if st.secrets.get('temmy_api_key') else None
+            )
 
             # Resolve report type
             report_type = (ReportType.PRE_APPLICATION
@@ -459,22 +451,30 @@ if step5:
             def _cb(idx, total, office, app):
                 pct = idx / max(1, total)
                 prog.progress(pct, text=f'Verifying {idx}/{total} — {office} {app}')
-            with st.spinner('Verifying records against Signa unified register API...'):
-                signa_records = verify_records(signa_client, target_records, progress_callback=_cb)
+            with st.spinner('Verifying records against Signa unified register API (UK via TemmyDB)...'):
+                signa_records = verify_records(
+                    signa_client, target_records,
+                    progress_callback=_cb,
+                    temmy_client=temmy_client,
+                )
             prog.empty()
 
             verified_count = sum(1 for r in signa_records if r.verified)
-            st.info(f'Signa verification: {verified_count} of {len(signa_records)} records confirmed.')
+            # Per-source breakdown — useful for diagnosing UK coverage at a glance.
+            by_source: dict = {}
+            for r in signa_records:
+                by_source[r.verification_source] = by_source.get(r.verification_source, 0) + 1
+            src_summary = ', '.join(f'{k}={v}' for k, v in sorted(by_source.items()))
+            st.info(
+                f'Verification: {verified_count} of {len(signa_records)} records confirmed '
+                f'({src_summary}).'
+            )
 
             # --- Phase 2: scoring + narrative (one batched LLM call per pass) ---
-            if not client_jurisdictions:
-                # Always supply at least US so the scoring rubric has something
-                # to compare record jurisdictions against.
-                client_jurisdictions = ['US']
             client_brand = {
                 'mark': step5['exact'],
                 'classes': client_classes,
-                'jurisdictions': client_jurisdictions,
+                'jurisdiction': client_jurisdiction,
                 'brand_reference': step5['order_meta'].get('brand_reference', ''),
                 'countries': step5['countries'],
             }
@@ -486,7 +486,7 @@ if step5:
                     narrative_client=narrative_client,
                     client_classes=client_classes,
                     client_mark=step5['exact'],
-                    client_jurisdiction=client_jurisdictions,
+                    client_jurisdiction=client_jurisdiction,
                 )
 
             # --- Phase 3: render docx ---
