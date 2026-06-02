@@ -31,6 +31,83 @@ DEFAULT_TIMEOUT_SEC = 15
 # Maximum retries on transient failures (network blips, 5xx, rate limits).
 DEFAULT_MAX_RETRIES = 3
 
+# --- BR-001 fix (28 May 2026) ---
+# Signa's /v1/trademarks endpoint exposes two parallel filter parameters:
+#   offices=         — accepts Signa's internal office codes (uspto, euipo,
+#                      cipo, wipo, inpi-fr, ipau, ipi, ipos, nipo, prv).
+#                      UKIPO not yet in production (planned code: ukipo).
+#   jurisdictions=   — accepts ISO 3166-1 alpha-2 codes plus EU and WO,
+#                      e.g. jurisdictions=US, jurisdictions=EU.
+#
+# Braudit's scraped spreadsheets carry ISO-style codes (US, GB, EU and the
+# legacy OHIM-era EM for EUIPO), not Signa office codes. The previous code
+# was sending these as offices=US / offices=EM / offices=GB and getting an
+# HTTP 400 ("Unknown office code") every time. The fix is to (a) normalise
+# legacy aliases to the canonical jurisdiction code used elsewhere in the
+# tool (see pipeline/jurisdictions.py) and (b) send under jurisdictions=,
+# not offices=.
+#
+# Side effect worth noting: jurisdictions=US returns USPTO direct nationals
+# AND Madrid designations into the US via WIPO. For a clearance audit this
+# is the correct behaviour — Madrid-routed rights are enforceable in the
+# territory and matter for opposition risk.
+#
+# Note: until Signa ships the planned `ukipo` connector, jurisdictions=GB
+# will only return Madrid designations into the UK (via WIPO) plus EUIPO
+# pre-Brexit rights that designated GB. Native UK filings (UK00003xxxxxxx)
+# remain unverifiable through Signa. See BR-002 in the build backlog.
+_NORMALISE_TO_JURISDICTION = {
+    # US
+    'US': 'US', 'USA': 'US', 'USPTO': 'US',
+    # EUIPO (EM is the legacy OHIM-era designator, 1996–2016)
+    'EU': 'EU', 'EM': 'EU', 'EUTM': 'EU', 'EUIPO': 'EU',
+    # UK
+    'GB': 'GB', 'UK': 'GB', 'UKIPO': 'GB',
+    # WIPO Madrid
+    'WO': 'WO', 'WIPO': 'WO', 'IR': 'WO', 'MADRID': 'WO',
+    # Benelux
+    'BX': 'BX', 'BOIP': 'BX',
+}
+
+
+def _to_jurisdiction(code: str) -> str:
+    """Normalise an office/jurisdiction string to the canonical code accepted
+    by Signa's `jurisdictions=` filter. Returns the input uppercased if no
+    mapping is found (lets unknown ISO codes pass through unchanged).
+    """
+    if not code:
+        return ''
+    key = str(code).strip().upper()
+    return _NORMALISE_TO_JURISDICTION.get(key, key)
+
+
+def _brexit_clone_to_eutm(uk_number: str) -> str | None:
+    """Map a UK Brexit-clone application number back to its parent EUTM number.
+
+    At midnight on 31 December 2020, EUIPO registrations covering the UK were
+    cloned into the UK register under the `UK009` prefix. The clone number is
+    formed by `UK009` + the parent EUTM's digits with the leading zero of
+    the 9-digit EUTM stripped. Examples:
+        EUTM 015873649  ->  UK00915873649
+        EUTM 018452071  ->  UK00918452071
+    Strip the `UK009` prefix and re-pad to 9 digits to recover the parent.
+
+    Returns None for native UK numbers (UK00003xxxxxxxx and friends) and any
+    input that does not match the Brexit-clone shape.
+    """
+    n = str(uk_number or '').strip().upper()
+    if not n.startswith('UK009'):
+        return None
+    suffix = n[5:]
+    if not suffix or not suffix.isdigit():
+        return None
+    # The EUTM register uses 9-digit numbers with a leading zero; the clone
+    # encodes 8 digits. Anything other than 8 digits is not a recognisable
+    # clone shape.
+    if len(suffix) != 8:
+        return None
+    return suffix.zfill(9)
+
 
 @dataclass
 class VerifiedRecord:
@@ -61,8 +138,15 @@ class VerifiedRecord:
     has_media: bool             # True if Signa has an image for this record
     source_url: str             # Direct link to the source register record (derived)
     signa_id: str               # Signa's internal id, useful for follow-up calls
-    verified: bool              # True if Signa returned a record; False if not found
+    verified: bool              # True if a registry returned a record; False if not
     verification_note: str      # Free-text note explaining any verification gap
+    # Where the data actually came from. Added in the BR-002 Temmy patch.
+    # One of: 'signa' (default, direct hit) | 'signa_brexit_clone_proxy'
+    # (parent EUTM standing in for a UK clone) | 'temmy' (UKIPO via TemmyDB)
+    # | 'unverified' (no source returned a record). Default 'signa' is kept
+    # so any existing caller code that constructs VerifiedRecord without
+    # this field keeps working.
+    verification_source: str = 'signa'
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -148,13 +232,22 @@ class SignaClient:
 
     def search(self, *, q: str, offices: Iterable[str] | str | None = None,
                limit: int = 10) -> list[dict]:
-        """Free-text + office-filtered search. Returns the raw 'data' array."""
+        """Free-text + jurisdiction-filtered search. Returns the raw 'data' array.
+
+        The `offices` kwarg name is kept for backwards-compatibility with
+        existing callers, but the values are normalised through
+        `_to_jurisdiction()` and sent under Signa's `jurisdictions=` filter.
+        See module docstring (BR-001 fix note) for the rationale.
+        """
         params = {'q': q, 'limit': limit}
         if offices:
             if isinstance(offices, str):
-                params['offices'] = offices
+                codes = [_to_jurisdiction(offices)]
             else:
-                params['offices'] = ','.join(offices)
+                codes = [_to_jurisdiction(o) for o in offices]
+            codes = [c for c in codes if c]  # drop empties from bad input
+            if codes:
+                params['jurisdictions'] = ','.join(codes)
         body = self._get('/trademarks', params)
         # Signa standard envelope: { "data": [...], "object": "list", ... }
         return body.get('data', []) if isinstance(body, dict) else []
@@ -187,6 +280,29 @@ class SignaClient:
         for rec in candidates:
             if str(rec.get('registration_number') or '').strip() == target:
                 return rec
+        # Pass 4 (Brexit clone fallback): if this is a UK Brexit-clone
+        # application number (UK009xxxxxxxx), the clone itself is not in
+        # Signa — UKIPO is on Signa's roadmap but not yet in production.
+        # The clone shares its recital, owner, classes and status with the
+        # parent EUTM (the two are the same underlying right, cloned at
+        # midnight on 31 Dec 2020). Fetch the parent EUTM and re-badge it
+        # as the UK record so the report renderer can show real data for
+        # the UK row instead of an unverified placeholder.
+        parent_eutm = _brexit_clone_to_eutm(app_number)
+        if parent_eutm and target_office in ('gb', 'uk', 'ukipo', ''):
+            eu_candidates = self.search(q=parent_eutm, offices='EU', limit=5)
+            for rec in eu_candidates:
+                rec_app = str(rec.get('application_number') or '').strip()
+                if rec_app == parent_eutm:
+                    proxy = dict(rec)
+                    # Re-badge the proxy: caller asked about the UK clone,
+                    # not the parent EUTM. The marker field lets the
+                    # normaliser write an honest verification_note.
+                    proxy['office_code'] = 'ukipo'
+                    proxy['jurisdiction_code'] = 'GB'
+                    proxy['application_number'] = app_number
+                    proxy['_brexit_clone_parent_eutm'] = parent_eutm
+                    return proxy
         # Otherwise no confident match
         return None
 
@@ -284,6 +400,36 @@ def normalise_signa_record(rec: dict, *, fallback_office: str = '',
     office = office_raw.upper()
     app_number = _safe_str(rec.get('application_number') or fallback_app_number)
 
+    # Brexit-clone proxy (see lookup_by_app_number Pass 4): the record carries
+    # parent EUTM data but has been re-badged as UKIPO. Write an honest
+    # verification note so the report renderer can show the provenance.
+    # Also detect Temmy-sourced UK records via the `_temmy_proxy` marker the
+    # temmy adapter writes — these are first-class UKIPO verifications.
+    clone_parent = _safe_str(rec.get('_brexit_clone_parent_eutm'))
+    temmy_proxy = bool(rec.get('_temmy_proxy'))
+    if temmy_proxy:
+        temmy_id = rec.get('_temmy_id') or ''
+        verification_note = (
+            f'Verified via TemmyDB (the Trademark Helpline’s internal UKIPO '
+            f'mirror; refreshed weekly via live FTP feed from UKIPO). '
+            f'Temmy record id {temmy_id}.'
+        )
+        verification_source = 'temmy'
+    elif clone_parent:
+        verification_note = (
+            f'Verified via parent EUTM {clone_parent} — this UK record is a '
+            f'Brexit clone created from the parent EUTM at 23:00 GMT on '
+            f'31 December 2020. The record was not found in TemmyDB (UKIPO '
+            f'mirror), so the recital, owner, classes and status shown here '
+            f'are taken from the parent EUTM that the clone was derived from. '
+            f'Confirm direct on IPSUM (https://trademarks.ipo.gov.uk/) before '
+            f'relying for filing.'
+        )
+        verification_source = 'signa_brexit_clone_proxy'
+    else:
+        verification_note = 'Verified via Signa API'
+        verification_source = 'signa'
+
     return VerifiedRecord(
         office=office,
         jurisdiction=_safe_str(rec.get('jurisdiction_code')),
@@ -306,7 +452,8 @@ def normalise_signa_record(rec: dict, *, fallback_office: str = '',
         source_url=_source_url_for(office, app_number),
         signa_id=_safe_str(rec.get('id')),
         verified=True,
-        verification_note='Verified via Signa API',
+        verification_note=verification_note,
+        verification_source=verification_source,
     )
 
 
@@ -329,22 +476,50 @@ def unverified_record(office: str, app_number: str, *, reason: str = '') -> Veri
         source_url=_source_url_for(office, app_number),
         signa_id='',
         verified=False,
-        verification_note=reason or 'No matching record returned by Signa.',
+        verification_note=reason or 'No matching record returned by any registry.',
+        verification_source='unverified',
     )
 
 
-def verify_records(client: SignaClient, records: list[dict],
-                   progress_callback=None) -> list[VerifiedRecord]:
-    """Verify a list of (office, app_number) pairs against Signa.
+def _is_uk_office(office: str) -> bool:
+    """True if the input office code resolves to the UK jurisdiction."""
+    return _to_jurisdiction(office) == 'GB'
 
-    `records` is a list of dicts that must each contain at least
-    'office' and 'app' (matches the existing scored_trademarks shape from
+
+def verify_records(client: SignaClient, records: list[dict],
+                   progress_callback=None, *,
+                   temmy_client=None) -> list[VerifiedRecord]:
+    """Verify a list of (office, app_number) pairs.
+
+    Dispatch:
+      * UK records → TemmyDB primary (if `temmy_client` is provided). If
+        TemmyDB returns no record AND the number is a Brexit-clone shape
+        (UK009xxxxxxxx), fall back to the Signa parent-EUTM proxy. If
+        both fail, return an unverified placeholder routed to the v3
+        Data Quality block.
+      * All other jurisdictions → Signa, unchanged.
+
+    `records` is a list of dicts that must each contain at least 'office'
+    and 'app' (matches the existing scored_trademarks shape from
     pipeline/filters.py).
 
-    Returns a list of VerifiedRecord — one per input record, in the same order.
-    Failed lookups are returned as unverified placeholders rather than dropped,
-    so the report renderer can flag them explicitly.
+    Returns a list of VerifiedRecord — one per input record, in the same
+    order. Failed lookups are returned as unverified placeholders rather
+    than dropped, so the report renderer can flag them explicitly.
+
+    `temmy_client` is the TemmyClient instance (see temmy.py). If omitted
+    or None, UK records skip the Temmy primary path and go straight to the
+    Signa Brexit-clone fallback — useful for environments that don't have
+    the Temmy credential configured.
     """
+    # Local import to avoid a hard dependency on temmy.py when callers
+    # don't configure a TemmyClient.
+    if temmy_client is not None:
+        from temmy import verify_uk_record_via_temmy, TemmyError
+    else:
+        verify_uk_record_via_temmy = None
+        TemmyError = None  # type: ignore
+
     out: list[VerifiedRecord] = []
     total = len(records)
     for idx, t in enumerate(records, start=1):
@@ -356,6 +531,65 @@ def verify_records(client: SignaClient, records: list[dict],
             out.append(unverified_record(office, app_number,
                                          reason='Missing office or app number'))
             continue
+
+        # ---- UK records: Temmy primary, Signa Brexit-clone backstop ----
+        if _is_uk_office(office):
+            temmy_raw = None
+            if temmy_client is not None and verify_uk_record_via_temmy is not None:
+                try:
+                    temmy_raw = verify_uk_record_via_temmy(temmy_client, app_number)
+                except Exception as exc:  # TemmyError or transient network
+                    # Don't blow up the whole batch on a Temmy outage — fall
+                    # through to the Signa Brexit-clone fallback. Capture the
+                    # reason in case the fallback also fails.
+                    temmy_raw = None
+                    _last_temmy_error: str | None = f'TemmyDB lookup failed: {exc}'
+                else:
+                    _last_temmy_error = None
+            else:
+                _last_temmy_error = None
+
+            if temmy_raw is not None:
+                out.append(normalise_signa_record(
+                    temmy_raw, fallback_office='UKIPO',
+                    fallback_app_number=app_number))
+                continue
+
+            # Try the Signa Brexit-clone fallback for UK009xxxxxxxx numbers.
+            # lookup_by_app_number internally runs Pass 4 (Brexit clone) when
+            # the office is UK/GB/UKIPO and the number matches the clone shape.
+            try:
+                raw = client.lookup_by_app_number(
+                    app_number=app_number, office=office)
+            except SignaError as exc:
+                reason = (
+                    f'TemmyDB returned no record; Signa Brexit-clone fallback '
+                    f'failed: {exc}.'
+                    if _last_temmy_error is None
+                    else f'{_last_temmy_error}; Signa Brexit-clone fallback '
+                         f'also failed: {exc}.'
+                )
+                out.append(unverified_record(office, app_number,
+                                             reason=reason))
+                continue
+            if raw is None:
+                reason = (
+                    'No matching record returned by TemmyDB or Signa '
+                    '(native UK records pre-2018 may not be in TemmyDB; '
+                    'Brexit-clone fallback only applies to UK009xxxxxxxx '
+                    'numbers).'
+                    if _last_temmy_error is None
+                    else f'{_last_temmy_error}; Signa Brexit-clone fallback '
+                         f'returned no record either.'
+                )
+                out.append(unverified_record(office, app_number,
+                                             reason=reason))
+                continue
+            out.append(normalise_signa_record(raw, fallback_office=office,
+                                              fallback_app_number=app_number))
+            continue
+
+        # ---- All other jurisdictions: existing Signa path ----
         try:
             raw = client.lookup_by_app_number(app_number=app_number, office=office)
         except SignaError as exc:
