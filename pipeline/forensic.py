@@ -513,9 +513,15 @@ def verify_records(client: SignaClient, records: list[dict],
     the Temmy credential configured.
     """
     # Local import to avoid a hard dependency on temmy.py when callers
-    # don't configure a TemmyClient.
+    # don't configure a TemmyClient. Tries the in-package relative import
+    # first (production layout where forensic.py and temmy.py both live
+    # inside pipeline/), falls back to a top-level import (flat workspace
+    # layout used for ad-hoc local testing).
     if temmy_client is not None:
-        from temmy import verify_uk_record_via_temmy, TemmyError
+        try:
+            from .temmy import verify_uk_record_via_temmy, TemmyError
+        except ImportError:
+            from temmy import verify_uk_record_via_temmy, TemmyError
     else:
         verify_uk_record_via_temmy = None
         TemmyError = None  # type: ignore
