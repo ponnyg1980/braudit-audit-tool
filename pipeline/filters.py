@@ -72,9 +72,35 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'nature': '',
         'countries': '',
         'search_platforms': '',
+        # Back-compat single-value fields (populated from the first matching
+        # word_searches / domain_searches entry of that type, so existing UI
+        # callers keep working).
         'exact_match': '',
         'starts_with': '',
         'domain_exact': '',
+        # New structured fields (added 03 June 2026 for the multi-phrase Order
+        # Form). Each entry is {'type': str, 'phrase': str, 'remarks': str}.
+        # `type` is the value in column A (e.g. 'Exact Match', 'Starts With',
+        # 'Contains', 'Similar To'); `phrase` is the value in column B;
+        # `remarks` is the value in column C if present.
+        'word_searches': [],
+        'domain_searches': [],
+        # Image fields (Order Form template rows 30 and 31). image_1 and
+        # image_2 are TEXT labels from column B — typically the literal
+        # 'NO SEARCH', a filename, the sentinel '<embedded image>' written
+        # when an actual image is anchored to the cell, or empty. The raw
+        # image bytes (when present) live in image_1_bytes / image_2_bytes
+        # so downstream code can render or process them.
+        # vienna_classes is the shared Vienna code string from column C in
+        # IPO 'NN.NN.NN' format; both image rows are expected to carry the
+        # same Vienna codes so we prefer C30 and fall back to C31 if empty.
+        'image_1': '',
+        'image_1_bytes': None,    # bytes if an embedded image was anchored to B30
+        'image_1_format': '',     # 'jpeg', 'png', etc. — empty if no embedded image
+        'image_2': '',
+        'image_2_bytes': None,
+        'image_2_format': '',
+        'vienna_classes': '',
         'classes_csv': '',
         'search_date': '',
         # Audit Operator Details block (added to Order Form template rows 58\u201364)
@@ -87,7 +113,10 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'prepared_by': '',
     }
     try:
-        wb = openpyxl.load_workbook(xlsx_path, data_only=True, read_only=True)
+        # NB: read_only=True would drop _images, which we need to detect
+        # embedded image marks anchored to B30 / B31. The Order Form is small
+        # so the regular load is fast enough.
+        wb = openpyxl.load_workbook(xlsx_path, data_only=True)
     except Exception:
         return out
     if 'Order Form' not in wb.sheetnames:
@@ -146,6 +175,13 @@ def extract_order_metadata(xlsx_path: str) -> dict:
     text_ctx = False
     domain_ctx = False
 
+    # Recognised search-criterion types in column A of the words/domains
+    # blocks. Anything in this set is treated as a (type, phrase) row when
+    # we're inside text or domain context.
+    KNOWN_SEARCH_TYPES = {
+        'exact match', 'starts with', 'contains', 'similar to',
+    }
+
     # Class list rows start with a class number like '11 - Heating Components'.
     import re
     class_nums: list[int] = []
@@ -153,6 +189,7 @@ def extract_order_metadata(xlsx_path: str) -> dict:
     for r in range(1, min(ws.max_row + 1, 100)):
         a = ws.cell(row=r, column=1).value
         b = ws.cell(row=r, column=2).value
+        c = ws.cell(row=r, column=3).value
         if a is None:
             continue
         a_str = str(a).strip()
@@ -174,17 +211,58 @@ def extract_order_metadata(xlsx_path: str) -> dict:
             continue
         if 'image search' in a_key or 'g&s classes' in a_key:
             text_ctx = domain_ctx = False
+            # fall through so we can still match 'image mark 1' / 'image mark 2'
+            # against the explicit handlers below.
+
+        # Words block: capture every (type, phrase) pair, not just Exact /
+        # Starts With. Phrase must be non-empty; remarks (column C) optional.
+        if text_ctx and a_key in KNOWN_SEARCH_TYPES:
+            phrase = (str(b).strip() if b is not None else '')
+            if phrase:
+                remarks = (str(c).strip() if c is not None else '')
+                type_label = a_str  # preserve original casing for display
+                out['word_searches'].append({
+                    'type': type_label,
+                    'phrase': phrase,
+                    'remarks': remarks,
+                })
+                # Back-compat: populate single-value fields from the first
+                # matching entry of each type so the existing UI doesn't break.
+                if a_key == 'exact match' and not out['exact_match']:
+                    out['exact_match'] = phrase
+                elif a_key == 'starts with' and not out['starts_with']:
+                    out['starts_with'] = phrase
             continue
 
-        if a_key == 'exact match':
-            v = (str(b).strip() if b else '')
-            if text_ctx:
-                out['exact_match'] = v
-            elif domain_ctx:
-                out['domain_exact'] = v
+        # Domains block: same shape as words.
+        if domain_ctx and a_key in KNOWN_SEARCH_TYPES:
+            phrase = (str(b).strip() if b is not None else '')
+            if phrase:
+                remarks = (str(c).strip() if c is not None else '')
+                type_label = a_str
+                out['domain_searches'].append({
+                    'type': type_label,
+                    'phrase': phrase,
+                    'remarks': remarks,
+                })
+                if a_key == 'exact match' and not out['domain_exact']:
+                    out['domain_exact'] = phrase
             continue
-        if a_key == 'starts with' and text_ctx:
-            out['starts_with'] = (str(b).strip() if b else '')
+
+        # Image rows: 'Image Mark 1' (R30) and 'Image Mark 2' (R31). The
+        # value cell B may be a filename, the literal 'NO SEARCH' sentinel,
+        # or empty. Column C carries the shared Vienna classification codes.
+        if a_key in ('image mark 1', 'image mark 2'):
+            value = (str(b).strip() if b is not None else '')
+            # 'NO SEARCH' is a legitimate signal that this image slot is
+            # intentionally unused; preserve it verbatim rather than blanking
+            # it, so downstream code can distinguish "no image search wanted"
+            # from "image search wanted but image filename missing".
+            slot = 'image_1' if a_key == 'image mark 1' else 'image_2'
+            out[slot] = value
+            vienna = (str(c).strip() if c is not None else '')
+            if vienna and not out['vienna_classes']:
+                out['vienna_classes'] = vienna
             continue
 
         # Class row: 'NN - Description'
@@ -208,6 +286,44 @@ def extract_order_metadata(xlsx_path: str) -> dict:
 
     if class_nums:
         out['classes_csv'] = ', '.join(str(n) for n in class_nums)
+
+    # Embedded images on the Order Form sheet — operator pastes the actual
+    # logo image into cell B30 / B31 rather than typing a filename. Walk the
+    # sheet's image collection and look for anchors at row 30 / row 31,
+    # column 2 (B). When found, store the raw bytes in image_N_bytes and
+    # the format in image_N_format; promote the cell label to the
+    # '<embedded image>' sentinel if the text cell was empty.
+    for img in (getattr(ws, '_images', None) or []):
+        try:
+            anchor = img.anchor
+            from_ = getattr(anchor, '_from', None)
+            if from_ is None:
+                continue
+            # openpyxl uses 0-indexed AnchorMarker; col 1 == B, row 29 == row 30
+            if from_.col != 1:
+                continue
+            row_1based = from_.row + 1
+            if row_1based not in (30, 31):
+                continue
+            slot = 'image_1' if row_1based == 30 else 'image_2'
+            # Pull raw bytes — _data() is the openpyxl Image API
+            try:
+                blob = img._data()
+                data = bytes(blob) if isinstance(blob, (bytes, bytearray)) else None
+            except Exception:
+                data = None
+            if not data:
+                continue
+            out[f'{slot}_bytes'] = data
+            out[f'{slot}_format'] = (getattr(img, 'format', '') or '').lower()
+            # Only promote the cell label if the text cell was empty —
+            # don't overwrite an explicit operator note or filename.
+            if not out[slot]:
+                out[slot] = '<embedded image>'
+        except Exception:
+            # Image walk is best-effort; an unparseable image shouldn't
+            # break the rest of the order-form parse.
+            continue
 
     wb.close()
     return out
