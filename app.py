@@ -100,10 +100,88 @@ if uploaded is not None:
     _ingest_upload(uploaded)
     meta = st.session_state.get('order_meta') or {}
     if meta.get('client_name'):
+        # Build a concise summary line covering everything the parser now captures.
+        word_n = len(meta.get('word_searches') or [])
+        domain_n = len(meta.get('domain_searches') or [])
+        # 'NO SEARCH' is a legitimate sentinel meaning the slot is intentionally
+        # unused. Count only filenames as actual image searches.
+        def _is_real_image(v: str) -> bool:
+            v = (v or '').strip()
+            return bool(v) and v.upper() != 'NO SEARCH'
+        image_n = sum(1 for k in ('image_1', 'image_2') if _is_real_image(meta.get(k, '')))
+        vienna = meta.get('vienna_classes', '')
         st.success(
             f"📋 Order Form parsed: **{meta['client_name']}** · classes {meta.get('classes_csv','—')} "
-            f"· exact match \"{meta.get('exact_match','—')}\""
+            f"· {word_n} word search{'es' if word_n != 1 else ''}, "
+            f"{domain_n} domain search{'es' if domain_n != 1 else ''}, "
+            f"{image_n} image search{'es' if image_n != 1 else ''}"
+            + (f' · Vienna: {vienna}' if vienna else '')
         )
+
+        # Expandable preview of every captured search criterion. Read-only —
+        # it shows what landed from the spreadsheet so the operator can verify
+        # before running the audit. Edits still happen in the form below.
+        with st.expander('📑 Show all captured search criteria from the Order Form'):
+            st.markdown('**Word searches (Order Form rows 14–18)**')
+            ws_list = meta.get('word_searches') or []
+            if ws_list:
+                st.dataframe(
+                    [{'Type': w['type'], 'Phrase': w['phrase'], 'Remarks': w['remarks']}
+                     for w in ws_list],
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.caption('_No word searches captured._')
+
+            st.markdown('**Domain searches (Order Form rows 22–26)**')
+            ds_list = meta.get('domain_searches') or []
+            if ds_list:
+                st.dataframe(
+                    [{'Type': d['type'], 'Phrase': d['phrase'], 'Remarks': d['remarks']}
+                     for d in ds_list],
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.caption('_No domain searches captured._')
+
+            st.markdown('**Image searches (Order Form rows 30–31)**')
+            img_rows = [
+                {
+                    'Slot': 'Image Mark 1',
+                    'Value': meta.get('image_1', '') or '—',
+                    'Embedded': (
+                        f'✓ {meta.get("image_1_format","").upper()} '
+                        f'({len(meta.get("image_1_bytes") or b"")} bytes)'
+                        if meta.get('image_1_bytes') else '—'
+                    ),
+                },
+                {
+                    'Slot': 'Image Mark 2',
+                    'Value': meta.get('image_2', '') or '—',
+                    'Embedded': (
+                        f'✓ {meta.get("image_2_format","").upper()} '
+                        f'({len(meta.get("image_2_bytes") or b"")} bytes)'
+                        if meta.get('image_2_bytes') else '—'
+                    ),
+                },
+            ]
+            st.dataframe(img_rows, use_container_width=True, hide_index=True)
+            # Visual preview of embedded image marks so the operator can
+            # confirm the right logo was extracted from the spreadsheet.
+            img1_bytes = meta.get('image_1_bytes')
+            img2_bytes = meta.get('image_2_bytes')
+            if img1_bytes or img2_bytes:
+                preview_cols = st.columns(2)
+                if img1_bytes:
+                    with preview_cols[0]:
+                        st.image(img1_bytes, caption='Image Mark 1 (B30)', width=240)
+                if img2_bytes:
+                    with preview_cols[1]:
+                        st.image(img2_bytes, caption='Image Mark 2 (B31)', width=240)
+            if vienna:
+                st.markdown(f'**Vienna classes (shared):** `{vienna}`')
+            else:
+                st.caption('_No Vienna codes captured yet (column C of the image rows). Operator can add them on the Order Form._')
     else:
         st.warning('Uploaded — but the Order Form sheet was not found or could not be read. Fill the fields below manually.')
 else:
