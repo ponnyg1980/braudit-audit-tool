@@ -274,20 +274,35 @@ def build_step5_report(*, order_meta: dict,
         p_logo.add_run().add_picture(LOGO_PATH_FULL, width=Inches(2.4))
 
     # ---- Header / Title ----
-    # Decide whether this is a Word Mark or Image Mark report so the title
-    # block reflects what the operator actually commissioned.
+    # Tri-state report-type detection from order_meta.word_or_image:
+    #   "Word Only"               -> Word Mark Report
+    #   "Logo or Figurative Mark" -> Image Mark Report
+    #   "Combined Word and Logo"  -> Combined Word + Logo Report
     word_or_image = (order_meta.get('word_or_image') or '').strip().lower()
-    is_image_report = 'image' in word_or_image or 'logo' in word_or_image or 'figurative' in word_or_image
-    mark_type_label = 'Image Mark Report' if is_image_report else 'Word Mark Report'
+    is_combined_report = 'combined' in word_or_image
+    is_image_report = (not is_combined_report) and (
+        'image' in word_or_image or 'logo' in word_or_image or 'figurative' in word_or_image
+    )
+    # Reports that need the image cover treatment (logo embed + Vienna codes)
+    # are both Image and Combined.
+    show_image_cover = is_combined_report or is_image_report
+    if is_combined_report:
+        mark_type_label = 'Combined Word + Logo Report'
+    elif is_image_report:
+        mark_type_label = 'Image Mark Report'
+    else:
+        mark_type_label = 'Word Mark Report'
 
     add_para(doc, order_meta.get('client_name', ''), bold=True, color=BRAND_NAVY, size=16, space_after=2)
     add_para(doc, f'Monitoring or Representation Report — {mark_type_label}',
              bold=True, color=BRAND_NAVY, size=18, space_after=10)
 
-    # For Image Mark reports: embed the logo/figurative image inline so the
-    # cover panel visibly shows what we're searching for. Image bytes come
-    # from the Order Form parser (extract_order_metadata captures B30/B31).
-    if is_image_report:
+    # For Image Mark and Combined reports: embed the logo/figurative image
+    # inline so the cover panel visibly shows what we're searching for.
+    # Image bytes come from the Order Form parser (extract_order_metadata
+    # captures B30/B31). For Combined reports, the word search criteria are
+    # already shown in Section 2 — only the image side needs cover treatment.
+    if show_image_cover:
         img1 = order_meta.get('image_1_bytes')
         img2 = order_meta.get('image_2_bytes')
         if img1 or img2:
@@ -578,8 +593,16 @@ def build_step5_report(*, order_meta: dict,
     # UK trademark number (e.g. UK00003076168) fits without wrapping.
     # Recovered width comes from Class column (1.25 \u2192 1.10) and Owner
     # (1.05 \u2192 0.95). Total: 0.4 + 0.95 + 0.95 + 0.55 + 1.10 + 0.50 + 0.95 + 0.95 + 0.65 = 7.00".
-    tm_widths  = [0.40,   0.95,    0.95,        0.55,    1.10,                       0.50,   0.95,    0.95,      0.65]
-    tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
+    # For Combined reports, a "Threat" column is inserted before "Risk" so
+    # each (possibly duplicated) row shows whether it represents a Word or
+    # Logo threat. Widths shrunk proportionally to keep the 7.0" total.
+    if is_combined_report:
+        # 10 columns. Total: 0.40 + 0.90 + 0.85 + 0.50 + 1.00 + 0.45 + 0.85 + 0.75 + 0.55 + 0.75 = 7.00".
+        tm_widths  = [0.40,   0.90,    0.85,        0.50,    1.00,                       0.45,   0.85,    0.75,     0.55,     0.75]
+        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Threat', 'Risk']
+    else:
+        tm_widths  = [0.40,   0.95,    0.95,        0.55,    1.10,                       0.50,   0.95,    0.95,     0.65]
+        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
 
     # Office-aware hyperlink for the App # column (index 1 now)
     # We pull the office from column 0 of the row so each link goes to the
@@ -591,10 +614,23 @@ def build_step5_report(*, order_meta: dict,
         # Render the mark image inline at ~0.6" wide; empty cell if no image.
         return {'image_bytes': t.get('image_bytes'), 'width_in': 0.6}
 
+    # Shared row-builder + risk-column index for both 3e (Live) and 3f
+    # (Dead) tables. Defined here so 3f can re-use it.
+    def _row(t):
+        base = [t['office'], t['app'], t['mark'], _img_cell(t),
+                _class_cell(t['classes']), _short_type(t['type']),
+                t['owner'], t['status']]
+        if is_combined_report:
+            return base + [t.get('threat_type', 'Word'), t['risk']]
+        return base + [t['risk']]
+    # Risk column index shifts by +1 in combined-mode tables (Threat column
+    # is inserted before Risk).
+    risk_idx = 9 if is_combined_report else 8
+
     if trademarks_live:
-        tl_body = [[t['office'], t['app'], t['mark'], _img_cell(t), _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_live]
+        tl_body = [_row(t) for t in trademarks_live]
         add_table(doc, tm_widths, tm_headers,
-                  tl_body, risk_col_index=8,
+                  tl_body, risk_col_index=risk_idx,
                   hyperlink_col_indexes={1: _app_link},
                   font_size=7)
     else:
@@ -605,9 +641,9 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
     add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
     if trademarks_dead:
-        td_body = [[t['office'], t['app'], t['mark'], _img_cell(t), _class_cell(t['classes']), _short_type(t['type']), t['owner'], t['status'], t['risk']] for t in trademarks_dead]
+        td_body = [_row(t) for t in trademarks_dead]
         add_table(doc, tm_widths, tm_headers,
-                  td_body, risk_col_index=8,
+                  td_body, risk_col_index=risk_idx,
                   hyperlink_col_indexes={1: _app_link},
                   font_size=7)
 
