@@ -83,9 +83,22 @@ def mark_matches_search_row(mark_text: str, search_type: str, phrase: str) -> bo
         # Whole-string ratio
         if _fuzzy_ratio(mt, p) >= 0.78:
             return True
-        # Token-level: try ratio against each space-delimited token
+        # Token-level: try ratio against each space-delimited token in the mark
         for tok in mt.split():
             if _fuzzy_ratio(tok, p) >= 0.85:
+                return True
+        # Token-overlap (10 Jun 2026): "Similar To 'A B C'" also matches if
+        # the mark contains any non-trivial (>=4 char) whole-word token from
+        # the phrase. This restores compatibility with scraper output where
+        # the scraper pre-filtered using individual phrase words: marks like
+        # 'Properly Services' should match a search for 'Nicholson Flooring
+        # Services' on the SERVICES token. Without this branch, whole-phrase
+        # fuzzy matching alone dropped every record. Tokens <4 chars are
+        # ignored to avoid trivial overlaps (e.g. 'AND', 'OR', 'AIR' on a
+        # three-letter prefix).
+        mark_tokens = set(re.findall(r'\w+', mt))
+        for ptok in re.findall(r'\w+', p):
+            if len(ptok) >= 4 and ptok in mark_tokens:
                 return True
         return False
     # Unknown type — fall back to Starts With behaviour (was the old default)
@@ -144,6 +157,21 @@ def has_sic(sic_str: str, target_sic: str) -> bool:
     if not sic_str:
         return False
     return target_sic in str(sic_str)
+
+
+def is_figurative_type(mark_type: str) -> bool:
+    """True when a trademark's Type column denotes a mark with a visual
+    element — Figurative, Combined (word + image), Stylised — and therefore
+    can pose a Logo-axis threat. Pure 'Word' marks return False.
+
+    Used in process_trademarks to gate Logo-axis row emission in Combined
+    reports: a mark with no figurative element doesn't compete on the logo
+    side, even if it shares a class with the client's mark.
+    """
+    if not mark_type:
+        return False
+    t = str(mark_type).lower()
+    return ('figurative' in t) or ('combined' in t) or ('stylized' in t) or ('stylised' in t)
 
 
 def extract_order_metadata(xlsx_path: str) -> dict:
@@ -989,15 +1017,36 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             entry['threat_type'] = record_axis  # 'Word' or 'Logo'
             scored.append(entry)
 
+        # ----------- Axis-eligibility gates (10 Jun 2026) ------------
+        # A record only emits a Word-axis row if its mark text actually
+        # matches one of the operator's word_searches rows. Without this
+        # gate every figurative mark sharing a class with the client got a
+        # Word threat row even when the mark text had zero overlap (e.g.
+        # 'B GROUPE BRANDT' scored Low Risk on Word axis just from class
+        # overlap, polluting Section 1 with hundreds of false positives).
+        #
+        # A record only emits a Logo-axis row if its Type contains a
+        # figurative element (Figurative / Combined / Stylised). A pure
+        # 'Word' mark cannot pose a logo threat, even if it shares a class.
+        #
+        # When word_searches is empty (legacy callers), we fall back to the
+        # pre-fix behaviour and allow Word emission unconditionally so the
+        # older single-axis pipelines still work.
+        word_eligible = (not word_searches) or mark_matches_any(base_record['mark'], word_searches)
+        logo_eligible = is_figurative_type(base_record['type'])
+
         if report_type == 'word_only':
-            _emit('Word', word_score, word_risk)
+            if word_eligible:
+                _emit('Word', word_score, word_risk)
         elif report_type == 'logo':
-            _emit('Logo', image_score, image_risk)
+            if logo_eligible:
+                _emit('Logo', image_score, image_risk)
         else:  # combined
-            word_active = word_risk != 'Negligible'
-            image_active = image_risk != 'Negligible'
+            word_active = word_eligible and (word_risk != 'Negligible')
+            image_active = logo_eligible and (image_risk != 'Negligible')
             if word_active and image_active:
-                # Duplicate the record so both threats are reviewed independently.
+                # Both axes apply — emit both so each threat is reviewed
+                # independently.
                 _emit('Word', word_score, word_risk)
                 _emit('Logo', image_score, image_risk)
             elif word_active:
@@ -1005,12 +1054,22 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             elif image_active:
                 _emit('Logo', image_score, image_risk)
             else:
-                # Both Negligible (e.g. status=Ended). Single row on the
-                # higher-scoring axis, ties go to Word.
-                if image_score > word_score:
-                    _emit('Logo', image_score, image_risk)
-                else:
+                # Neither axis active. If at least one axis is *eligible*
+                # but Negligible (e.g. status=Ended), keep the record on
+                # the higher-scoring eligible axis so the Dead-records
+                # section 3f is still populated. If NEITHER axis is
+                # eligible (no word match AND not figurative), drop the
+                # record — it's a false positive shared-class match.
+                if word_eligible and logo_eligible:
+                    if image_score > word_score:
+                        _emit('Logo', image_score, image_risk)
+                    else:
+                        _emit('Word', word_score, word_risk)
+                elif word_eligible:
                     _emit('Word', word_score, word_risk)
+                elif logo_eligible:
+                    _emit('Logo', image_score, image_risk)
+                # else: drop — no reason to flag this record at all.
 
     # Sort: live (non-Negligible) first by score desc, then by mark text.
     # Ties between Word and Logo duplicates keep their natural order.
