@@ -1,4 +1,8 @@
-"""Step 5: build the Braudit-style Word document from the filtered/scored data."""
+"""Step 5: build the Braudit-style Word document from the filtered/scored data.
+
+Branding is sourced from `brand_tokens.py` (TMH colours, logo, tagline) so
+every report this module produces stays in sync with the live brand.
+"""
 from __future__ import annotations
 from io import BytesIO
 from docx import Document
@@ -10,6 +14,13 @@ from docx.oxml import OxmlElement
 from datetime import date
 from io import BytesIO
 from .nice_classes import NICE_HEADINGS, parse_classes
+from .brand_tokens import (
+    BRAND_PINK, BRAND_NAVY, BRAND_SLATE, BRAND_LIGHT_SLATE,
+    BRAND_BODY, BRAND_WHITE, BRAND_BORDER, BRAND_FONT,
+    BRAND_TAGLINE, LOGO_PATH_FULL, logo_exists,
+    RISK_VERY_HIGH, RISK_HIGH, RISK_MEDIUM, RISK_LOW, RISK_NEGLIGIBLE,
+    RISK_THRESHOLDS, USABLE_PAGE_WIDTH_IN,
+)
 
 
 # ---------- styling helpers ----------
@@ -35,13 +46,16 @@ def set_cell_border(cell, color='BFBFBF', size=4):
 
 
 def risk_fill(risk):
+    """Map a risk-band label to the cell fill colour. Bands are semantic
+    (red/orange/amber/green/grey) — not brand colours — so they stay stable
+    across rebrands. Source of truth: brand_tokens.RISK_*."""
     r = (risk or '').lower()
-    if 'very high' in r: return 'C00000'
-    if 'high' in r: return 'F4B084'
-    if 'medium' in r: return 'FFE699'
-    if 'low' in r: return 'C5E0B4'
-    if 'negligible' in r: return 'D9D9D9'
-    return 'FFFFFF'
+    if 'very high' in r: return RISK_VERY_HIGH
+    if 'high' in r: return RISK_HIGH
+    if 'medium' in r: return RISK_MEDIUM
+    if 'low' in r: return RISK_LOW
+    if 'negligible' in r: return RISK_NEGLIGIBLE
+    return BRAND_WHITE
 
 
 def tm_url(office: str, app_num: str) -> str:
@@ -66,7 +80,7 @@ def tm_url(office: str, app_num: str) -> str:
     return ''
 
 
-def add_hyperlink(paragraph, url, text, color='0563C1', underline=True, font_size=9, bold=False):
+def add_hyperlink(paragraph, url, text, color=BRAND_PINK, underline=True, font_size=9, bold=False):
     """Inserts an external hyperlink into a paragraph."""
     part = paragraph.part
     r_id = part.relate_to(url, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink', is_external=True)
@@ -76,7 +90,7 @@ def add_hyperlink(paragraph, url, text, color='0563C1', underline=True, font_siz
     r_pr = OxmlElement('w:rPr')
 
     rFonts = OxmlElement('w:rFonts')
-    rFonts.set(qn('w:ascii'), 'Arial'); rFonts.set(qn('w:hAnsi'), 'Arial')
+    rFonts.set(qn('w:ascii'), BRAND_FONT); rFonts.set(qn('w:hAnsi'), BRAND_FONT)
     r_pr.append(rFonts)
 
     sz = OxmlElement('w:sz'); sz.set(qn('w:val'), str(font_size * 2)); r_pr.append(sz)
@@ -92,7 +106,7 @@ def add_hyperlink(paragraph, url, text, color='0563C1', underline=True, font_siz
     paragraph._p.append(hyperlink)
 
 
-def run(p, text, *, bold=False, italic=False, color='000000', size=11, font='Arial'):
+def run(p, text, *, bold=False, italic=False, color=BRAND_BODY, size=11, font=BRAND_FONT):
     r = p.add_run(text)
     r.font.name = font
     r.font.size = Pt(size)
@@ -103,7 +117,7 @@ def run(p, text, *, bold=False, italic=False, color='000000', size=11, font='Ari
     return r
 
 
-def add_para(doc, text='', *, bold=False, italic=False, color='000000', size=11, align=None, space_after=4):
+def add_para(doc, text='', *, bold=False, italic=False, color=BRAND_BODY, size=11, align=None, space_after=4):
     p = doc.add_paragraph()
     if align == 'center':
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -120,19 +134,20 @@ def add_heading(doc, text, level=1):
     p.paragraph_format.space_before = Pt(12)
     p.paragraph_format.space_after = Pt(6)
     sizes = {1: 16, 2: 13, 3: 11}
-    colors = {1: '1F3864', 2: '1F3864', 3: '2F5496'}
-    run(p, text, bold=True, color=colors.get(level, '000000'), size=sizes.get(level, 12))
+    # TMH palette: H1/H2 in navy, H3 in slate
+    colors = {1: BRAND_NAVY, 2: BRAND_NAVY, 3: BRAND_SLATE}
+    run(p, text, bold=True, color=colors.get(level, BRAND_BODY), size=sizes.get(level, 12))
     if level == 1:
-        # Bottom border
+        # Bottom border in pink for visual punch
         pPr = p._p.get_or_add_pPr()
         pBdr = OxmlElement('w:pBdr')
         bottom = OxmlElement('w:bottom')
-        bottom.set(qn('w:val'), 'single'); bottom.set(qn('w:sz'), '8'); bottom.set(qn('w:space'), '4'); bottom.set(qn('w:color'), '1F3864')
+        bottom.set(qn('w:val'), 'single'); bottom.set(qn('w:sz'), '8'); bottom.set(qn('w:space'), '4'); bottom.set(qn('w:color'), BRAND_PINK)
         pBdr.append(bottom); pPr.append(pBdr)
     return p
 
 
-def add_table(doc, col_widths_in, header_row, body_rows, *, header_fill='1F3864', header_color='FFFFFF',
+def add_table(doc, col_widths_in, header_row, body_rows, *, header_fill=BRAND_NAVY, header_color=BRAND_WHITE,
               risk_col_index=None, hyperlink_col_indexes=None, font_size=9):
     """Generic styled table.
     body_rows: list[list[str]] or list[list[(text, opts_dict)]]
@@ -244,7 +259,7 @@ def build_step5_report(*, order_meta: dict,
 
     # Set default font + margins
     style = doc.styles['Normal']
-    style.font.name = 'Arial'
+    style.font.name = BRAND_FONT
     style.font.size = Pt(11)
     for section in doc.sections:
         section.top_margin = Inches(0.75)
@@ -252,9 +267,48 @@ def build_step5_report(*, order_meta: dict,
         section.left_margin = Inches(0.75)
         section.right_margin = Inches(0.75)
 
+    # ---- TMH logo (top of cover) ----
+    if logo_exists(LOGO_PATH_FULL):
+        p_logo = doc.add_paragraph()
+        p_logo.paragraph_format.space_after = Pt(6)
+        p_logo.add_run().add_picture(LOGO_PATH_FULL, width=Inches(2.4))
+
     # ---- Header / Title ----
-    add_para(doc, order_meta.get('client_name', ''), bold=True, color='1F3864', size=16, space_after=2)
-    add_para(doc, 'Monitoring or Representation Report', bold=True, size=18, space_after=10)
+    # Decide whether this is a Word Mark or Image Mark report so the title
+    # block reflects what the operator actually commissioned.
+    word_or_image = (order_meta.get('word_or_image') or '').strip().lower()
+    is_image_report = 'image' in word_or_image or 'logo' in word_or_image or 'figurative' in word_or_image
+    mark_type_label = 'Image Mark Report' if is_image_report else 'Word Mark Report'
+
+    add_para(doc, order_meta.get('client_name', ''), bold=True, color=BRAND_NAVY, size=16, space_after=2)
+    add_para(doc, f'Monitoring or Representation Report — {mark_type_label}',
+             bold=True, color=BRAND_NAVY, size=18, space_after=10)
+
+    # For Image Mark reports: embed the logo/figurative image inline so the
+    # cover panel visibly shows what we're searching for. Image bytes come
+    # from the Order Form parser (extract_order_metadata captures B30/B31).
+    if is_image_report:
+        img1 = order_meta.get('image_1_bytes')
+        img2 = order_meta.get('image_2_bytes')
+        if img1 or img2:
+            add_para(doc, 'Image(s) being searched:', bold=True, color=BRAND_SLATE,
+                     size=10, space_after=4)
+            for blob, label in [(img1, 'Image Mark 1'), (img2, 'Image Mark 2')]:
+                if blob:
+                    p_img = doc.add_paragraph()
+                    p_img.paragraph_format.space_after = Pt(2)
+                    try:
+                        p_img.add_run().add_picture(BytesIO(blob), width=Inches(1.6))
+                        add_para(doc, label, italic=True, color=BRAND_LIGHT_SLATE,
+                                 size=9, space_after=6)
+                    except Exception:
+                        # Don't crash the whole report on a bad image
+                        add_para(doc, f'[{label}: image could not be rendered]',
+                                 italic=True, color=BRAND_LIGHT_SLATE, size=9)
+            vienna = (order_meta.get('vienna_classes') or '').strip()
+            if vienna:
+                add_para(doc, f'Vienna classes: {vienna}',
+                         bold=True, color=BRAND_SLATE, size=10, space_after=10)
 
     # ---- Cover / Order Detail Table ----
     # Build the "Trademark Classes" value with UKIPO standardised definitions
@@ -303,18 +357,20 @@ def build_step5_report(*, order_meta: dict,
     ]
     t = doc.add_table(rows=len(cover_rows), cols=2)
     t.autofit = False
+    # Widths sum to USABLE_PAGE_WIDTH_IN (7.0") so the table does NOT
+    # overflow the right margin (the 10 Jun 2026 fix). Was 2.2 + 5.3 = 7.5.
     for i, (k, v) in enumerate(cover_rows):
         for ci, txt in enumerate([k, v]):
             cell = t.rows[i].cells[ci]
             cell.text = ''
             set_cell_border(cell)
-            cell.width = Inches(2.2 if ci == 0 else 5.3)
+            cell.width = Inches(2.0 if ci == 0 else 5.0)
             cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
             p = cell.paragraphs[0]
             p.paragraph_format.space_after = Pt(0)
             if ci == 0:
-                set_cell_bg(cell, '1F3864')
-                run(p, txt, bold=True, color='FFFFFF', size=10)
+                set_cell_bg(cell, BRAND_NAVY)
+                run(p, txt, bold=True, color=BRAND_WHITE, size=10)
             else:
                 # Multi-line cell support \u2014 each \n becomes a paragraph
                 lines = str(txt).split('\n')
@@ -338,7 +394,8 @@ def build_step5_report(*, order_meta: dict,
         ['Trademark Registers \u2014 Live', str(raw_counts.get('tm_live_raw', 0)), str(len(trademarks_live))],
         ['Trademark Registers \u2014 Dead (Negligible)', str(raw_counts.get('tm_dead_raw', 0)), str(len(trademarks_dead))],
     ]
-    add_table(doc, [3.5, 1.8, 2.2],
+    # Widths sum to 7.0" \u2014 was 3.5 + 1.8 + 2.2 = 7.5" (overflowed margin).
+    add_table(doc, [3.4, 1.6, 2.0],
               ['Platform', 'Total Results', 'Flagged On This Report'],
               overview_rows, font_size=10)
 
@@ -362,14 +419,19 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3a. Google Search Results', level=2)
     add_para(doc, 'Word Searches use Google\u2019s matching criteria. Image Searches use Google Lens to identify similar images online.', size=10)
     if google:
-        g_body = [[g['keyword'], f"{g['score']}", g['risk'], g['link']] for g in google]
-        add_table(doc, [2.4, 1.3, 1.7, 2.4],
-                  ['Keyword', 'Score', 'Risk', 'Link'],
-                  g_body, risk_col_index=2,
-                  hyperlink_col_indexes={3: lambda row: row[3]},
+        # Dropped the legacy "Score" column \u2014 it carried a magic number (30.04
+        # / 44.35) from the original STEALTH-LED scoring code that has no
+        # documented meaning to clients. Risk band carries the signal; the
+        # Link column now gets the recovered width so URLs stop clipping
+        # off the right margin. Widths sum to 7.0" (was 7.8" and overflowed).
+        g_body = [[g['keyword'], g['risk'], g['link']] for g in google]
+        add_table(doc, [2.4, 1.4, 3.2],
+                  ['Keyword', 'Risk', 'Link'],
+                  g_body, risk_col_index=1,
+                  hyperlink_col_indexes={2: lambda row: row[2]},
                   font_size=10)
     else:
-        add_para(doc, 'No Google results flagged.', italic=True, color='595959')
+        add_para(doc, 'No Google results flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
     # 3b Companies
     add_heading(doc, '3b. Companies House UK Search Results', level=2)
@@ -378,7 +440,8 @@ def build_step5_report(*, order_meta: dict,
         # Build a {number: link} map so both Name and Co. No. cells can use it
         co_link_by_number = {c['number']: c.get('link') or f"https://find-and-update.company-information.service.gov.uk/company/{c['number']}" for c in companies}
         c_body = [[c['mark'], c['status'], c['number'], c['sic'], c['risk']] for c in companies]
-        add_table(doc, [2.4, 1.0, 1.4, 1.7, 1.3],
+        # Widths sum to 7.0" — was 7.8" and overflowed.
+        add_table(doc, [2.3, 0.9, 1.3, 1.4, 1.1],
                   ['Registered Company', 'Status', 'Co. No.', 'SIC', 'Risk'],
                   c_body, risk_col_index=4,
                   hyperlink_col_indexes={
@@ -387,24 +450,27 @@ def build_step5_report(*, order_meta: dict,
                   },
                   font_size=10)
     else:
-        add_para(doc, 'No matching companies flagged.', italic=True, color='595959')
+        add_para(doc, 'No matching companies flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
     # 3c Domains
     add_heading(doc, '3c. Domain Name Search Results', level=2)
     add_para(doc, 'Domain searches using variations of the client\u2019s mark across .com, .net, .co.uk, .co and .uk.', size=10)
     if domains:
-        # Build domain cells as list[(text, url)] so each URL is a clickable link
+        # Build domain cells as list[(text, url)] so each URL is a clickable link.
+        # Dropped the "(score)" suffix — that number was a STEALTH-LED magic
+        # value (40.76 / 63) with no documented scale. Risk band carries the signal.
         d_body = [
             [d['mark_text'],
              [(u, u) for u in d['urls']],
-             f"{d['risk']} ({d['score']})"]
+             d['risk']]
             for d in domains
         ]
-        add_table(doc, [2.0, 4.4, 1.4],
-                  ['Mark Variant', 'Domains', 'Risk (Score)'], d_body,
+        # Widths sum to 7.0" — was 7.8" and overflowed.
+        add_table(doc, [1.9, 3.9, 1.2],
+                  ['Mark Variant', 'Domains', 'Risk'], d_body,
                   risk_col_index=2, font_size=10)
     else:
-        add_para(doc, 'No domain results flagged.', italic=True, color='595959')
+        add_para(doc, 'No domain results flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
     # 3d Social
     add_heading(doc, '3d. Social Media Search Results', level=2)
@@ -415,12 +481,14 @@ def build_step5_report(*, order_meta: dict,
             # Build platform cells as list[(label, url)] so each platform name
             # is a clickable hyperlink straight to that profile/page.
             plats = [(k, v) for k, v in s['platforms'].items() if v]
-            s_body.append([s['mark_text'], plats, f"{s['risk']} ({s['score']})"])
-        add_table(doc, [2.0, 4.4, 1.4],
-                  ['Mark Variant', 'Platforms', 'Risk (Score)'], s_body,
+            # Magic-number (40.76 / 63) suffix dropped — same rationale as 3c.
+            s_body.append([s['mark_text'], plats, s['risk']])
+        # Widths sum to 7.0" — was 7.8" and overflowed.
+        add_table(doc, [1.9, 3.9, 1.2],
+                  ['Mark Variant', 'Platforms', 'Risk'], s_body,
                   risk_col_index=2, font_size=9)
     else:
-        add_para(doc, 'No social results flagged.', italic=True, color='595959')
+        add_para(doc, 'No social results flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
     # Helper: build the per-row Class cell value as "11 \u2014 heading\n12 \u2014 heading"
     def _class_cell(cls_str):
@@ -440,6 +508,18 @@ def build_step5_report(*, order_meta: dict,
     doc.add_page_break()
     add_heading(doc, '3e. Trademark Search Results \u2014 Live', level=1)
     add_para(doc, 'Live trademark records (Registered and Pending) where the mark is in scope and the recital touches one or more of the client\u2019s classes. Class definitions are the UKIPO standardised Nice Classification headings. Sorted by initial-review score descending.', size=10)
+
+    # Scoring legend so the operator and the client can interpret the Score
+    # column without having to read the methodology section. Thresholds are
+    # mirrored from brand_tokens.RISK_THRESHOLDS, which mirrors filters.py.
+    legend_rows = [[band, threshold] for band, threshold in RISK_THRESHOLDS]
+    add_para(doc, 'Scoring legend (score is out of 13):',
+             bold=True, color=BRAND_SLATE, size=10, space_after=2)
+    add_table(doc, [1.5, 5.5],
+              ['Risk Band', 'Score Range'],
+              legend_rows, risk_col_index=0, font_size=10)
+    add_para(doc, '', size=4, space_after=4)
+
     # Shorten the "Stylized characters" Mark Type label so it fits in the Type
     # column on one line. Other values ("Word", "Combined") already fit.
     def _short_type(t):
@@ -448,9 +528,11 @@ def build_step5_report(*, order_meta: dict,
             return 'Stylized'
         return s
 
-    # Column widths re-balanced again with Image column inserted after Mark Text.
-    # Total: 0.4 + 0.65 + 0.95 + 0.75 + 1.25 + 0.55 + 1.05 + 0.7 + 0.7 = 7.0 inches
-    tm_widths  = [0.4,    0.65,    0.95,        0.75,    1.25,                       0.55,   1.05,    0.7,       0.7]
+    # Column widths sum to 7.0". App # widened from 0.65 \u2192 0.95 so the full
+    # UK trademark number (e.g. UK00003076168) fits without wrapping.
+    # Recovered width comes from Class column (1.25 \u2192 1.10) and Owner
+    # (1.05 \u2192 0.95). Total: 0.4 + 0.95 + 0.95 + 0.55 + 1.10 + 0.50 + 0.95 + 0.95 + 0.65 = 7.00".
+    tm_widths  = [0.40,   0.95,    0.95,        0.55,    1.10,                       0.50,   0.95,    0.95,      0.65]
     tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
 
     # Office-aware hyperlink for the App # column (index 1 now)
@@ -470,7 +552,7 @@ def build_step5_report(*, order_meta: dict,
                   hyperlink_col_indexes={1: _app_link},
                   font_size=7)
     else:
-        add_para(doc, 'No live trademarks flagged.', italic=True, color='595959')
+        add_para(doc, 'No live trademarks flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
     # 3f Trademarks Dead
     doc.add_page_break()
@@ -491,9 +573,13 @@ def build_step5_report(*, order_meta: dict,
     add_para(doc, 'If you require full representation or only assistance with a particular stage, our team is ready to support you.')
     add_para(doc, 'We continually look to improve our service, so any feedback you can provide is always welcome.')
     add_para(doc, ' ')
-    add_para(doc, 'Jonathan Paton', bold=True)
-    add_para(doc, 'Founder and Director')
-    add_para(doc, 'The Trademark Helpline')
+    add_para(doc, 'Jonathan Paton', bold=True, color=BRAND_NAVY)
+    add_para(doc, 'Founder and Director', color=BRAND_SLATE)
+    add_para(doc, 'The Trademark Helpline', color=BRAND_SLATE)
+    add_para(doc, '')
+    # Brand sign-off — tagline in TMH pink, centred.
+    add_para(doc, BRAND_TAGLINE, bold=True, color=BRAND_PINK, size=12,
+             align='center', space_after=0)
 
     buf = BytesIO()
     doc.save(buf)
