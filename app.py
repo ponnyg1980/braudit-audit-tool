@@ -93,8 +93,27 @@ def _ingest_upload(uploaded_file):
     st.session_state['uploaded_digest'] = digest
     st.session_state['uploaded_path'] = tmp.name
     st.session_state['uploaded_name'] = uploaded_file.name
-    st.session_state['order_meta'] = extract_order_metadata(tmp.name)
+    meta = extract_order_metadata(tmp.name)
+    st.session_state['order_meta'] = meta
     st.session_state['specific_terms'] = extract_specific_terms(tmp.name)
+
+    # ----- Push captured search criteria into form-widget session_state -----
+    # The form widgets in _search_block use both `value=` AND `key=`. Streamlit's
+    # documented behaviour is: on subsequent renders the session_state value
+    # (under the widget key) wins over `value=`. So if the form is rendered ONCE
+    # with empty defaults (e.g. before a file is uploaded), session_state[key]
+    # is locked to '' and a later `value=` from a freshly-parsed upload is
+    # silently ignored. The fix is to explicitly overwrite those keys here
+    # the moment we know what the spreadsheet contains.
+    for i in range(5):
+        ws = (meta.get('word_searches') or [])[i] if i < len(meta.get('word_searches') or []) else None
+        st.session_state[f'wordsearch_type_{i}'] = (ws or {}).get('type', 'Exact Match')
+        st.session_state[f'wordsearch_phrase_{i}'] = (ws or {}).get('phrase', '')
+        st.session_state[f'wordsearch_remarks_{i}'] = (ws or {}).get('remarks', '')
+        ds = (meta.get('domain_searches') or [])[i] if i < len(meta.get('domain_searches') or []) else None
+        st.session_state[f'domsearch_type_{i}'] = (ds or {}).get('type', 'Exact Match')
+        st.session_state[f'domsearch_phrase_{i}'] = (ds or {}).get('phrase', '')
+        st.session_state[f'domsearch_remarks_{i}'] = (ds or {}).get('remarks', '')
 
 if uploaded is not None:
     _ingest_upload(uploaded)
@@ -382,23 +401,35 @@ if submitted:
         root_word = exact.strip().split()[0].upper() if exact.strip() else 'STEALTH'
 
         with st.spinner('Step 2: de-duplicating and applying exclusions...'):
+            # The operator's edited word/domain search rows now drive the
+            # filter+scoring decisions. Trademarks and companies are
+            # filtered against word_searches_input with type-aware matching
+            # (Exact Match / Starts With / Contains / Similar To). Domains
+            # filter against domain_searches_input the same way. The
+            # legacy single-root behaviour still applies when no rows are
+            # supplied (back-compat for any caller that hasn't moved over).
             tm_all = process_trademarks(
                 sheets.get('Trademarks', [[]]),
                 target_classes=target_classes,
                 root=root_word,
                 images=tm_images,
+                word_searches=word_searches_input,
             )
             companies = process_companies(
                 sheets.get('Companies', [[]]),
                 target_sic=sic_code.strip(),
                 root=root_word,
+                word_searches=word_searches_input,
             )
             # Picture-in-Cell images on the Google sheet (column A) — modern
             # Excel rich-values that openpyxl reports as #VALUE!. Extract them
             # so the report can render the actual image instead of an error.
             google_imgs = extract_google_image_cells(tmp_path)
             google = process_google(sheets.get('Google', [[]]), images=google_imgs)
-            domains = process_domains(sheets.get('Domains', [[]]))
+            domains = process_domains(
+                sheets.get('Domains', [[]]),
+                domain_searches=domain_searches_input,
+            )
             social = process_social(sheets.get('Social', [[]]))
 
         tm_live = [t for t in tm_all if t['risk'] != 'Negligible']
