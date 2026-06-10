@@ -320,9 +320,22 @@ def build_step5_report(*, order_meta: dict,
                         # Don't crash the whole report on a bad image
                         add_para(doc, f'[{label}: image could not be rendered]',
                                  italic=True, color=BRAND_LIGHT_SLATE, size=9)
-            vienna = (order_meta.get('vienna_classes') or '').strip()
-            if vienna:
-                add_para(doc, f'Vienna classes: {vienna}',
+            # Vienna classifications block — structured list of (code, description)
+            # from the Order Form's D31:D40 + E31:E40. Fall back to the legacy
+            # vienna_classes string if the structured list is empty.
+            vienna_list = order_meta.get('vienna_classifications') or []
+            vienna_str = (order_meta.get('vienna_classes') or '').strip()
+            if vienna_list:
+                add_para(doc, 'Vienna classifications (client image):',
+                         bold=True, color=BRAND_SLATE, size=10, space_after=2)
+                v_rows = [[v.get('code', '') or '—', v.get('description', '') or '—']
+                          for v in vienna_list]
+                add_table(doc, [1.5, 5.5],
+                          ['Classification', 'Description'],
+                          v_rows, font_size=10)
+                add_para(doc, '', size=4, space_after=6)
+            elif vienna_str:
+                add_para(doc, f'Vienna classifications (client image): {vienna_str}',
                          bold=True, color=BRAND_SLATE, size=10, space_after=10)
 
     # ---- Cover / Order Detail Table ----
