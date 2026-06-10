@@ -15,6 +15,7 @@ from pipeline.filters import (
     process_google, process_domains, process_social,
     extract_specific_terms, extract_order_metadata,
     extract_trademark_images, extract_google_image_cells,
+    report_type_from_meta,
 )
 from pipeline.report_builder import build_step5_report
 from pipeline.forensic import SignaClient, verify_records
@@ -408,12 +409,19 @@ if submitted:
             # filter against domain_searches_input the same way. The
             # legacy single-root behaviour still applies when no rows are
             # supplied (back-compat for any caller that hasn't moved over).
+            # Tri-state report type drives dual scoring + duplicate-row
+            # behaviour in process_trademarks. Combined reports get every
+            # record scored on BOTH word and image axes; duplicate rows
+            # emerge when both axes are non-Negligible.
+            report_type = report_type_from_meta(meta)
             tm_all = process_trademarks(
                 sheets.get('Trademarks', [[]]),
                 target_classes=target_classes,
                 root=root_word,
                 images=tm_images,
                 word_searches=word_searches_input,
+                report_type=report_type,
+                client_vienna=meta.get('vienna_classes', ''),
             )
             companies = process_companies(
                 sheets.get('Companies', [[]]),
