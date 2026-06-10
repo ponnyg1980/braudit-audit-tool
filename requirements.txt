@@ -4,4 +4,4 @@ openpyxl>=3.1
 pandas>=2.2
 requests>=2.31
 anthropic>=0.40
-# build-marker: v2.0.1-hotfix (forces full container rebuild)
+# build-marker: v2.2.0-image-cells (forces full container rebuild after Picture-in-Cell extractor)
