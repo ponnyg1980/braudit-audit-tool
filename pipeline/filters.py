@@ -186,16 +186,22 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         # when an actual image is anchored to the cell, or empty. The raw
         # image bytes (when present) live in image_1_bytes / image_2_bytes
         # so downstream code can render or process them.
-        # vienna_classes is the shared Vienna code string from column C in
-        # IPO 'NN.NN.NN' format; both image rows are expected to carry the
-        # same Vienna codes so we prefer C30 and fall back to C31 if empty.
+        #
+        # Vienna classifications block (template update 10 Jun 2026):
+        #   D31:D40 — up to 10 Vienna codes in IPO 'NN.NN.NN' format
+        #   E31:E40 — matching descriptions
+        # `vienna_classifications` is the structured list [{code, description}, ...].
+        # `vienna_classes` is the joined codes string kept for back-compat.
+        # Legacy spreadsheets that stored Vienna in C30/C31 are still
+        # supported via the fallback path below.
         'image_1': '',
         'image_1_bytes': None,    # bytes if an embedded image was anchored to B30
         'image_1_format': '',     # 'jpeg', 'png', etc. — empty if no embedded image
         'image_2': '',
         'image_2_bytes': None,
         'image_2_format': '',
-        'vienna_classes': '',
+        'vienna_classifications': [],   # NEW structured: [{'code': str, 'description': str}, ...]
+        'vienna_classes': '',           # back-compat joined string of codes
         'classes_csv': '',
         'search_date': '',
         # Audit Operator Details block (added to Order Form template rows 58\u201364)
@@ -419,6 +425,36 @@ def extract_order_metadata(xlsx_path: str) -> dict:
             # Image walk is best-effort; an unparseable image shouldn't
             # break the rest of the order-form parse.
             continue
+
+    # ---- Vienna classifications block (D31:D40 / E31:E40) -----------------
+    # Template update 10 Jun 2026. Up to 10 Vienna classification rows live
+    # in columns D and E starting at row 31 (row 30 is the "Classification /
+    # Description" header in newer templates). Build the structured
+    # vienna_classifications list AND populate the legacy `vienna_classes`
+    # joined string. Rows where both D and E are empty are skipped.
+    # If D31:D40 yields nothing AND the legacy C30/C31 path captured a value
+    # earlier in the loop, we leave vienna_classes as-is for back-compat.
+    new_vienna: list[dict] = []
+    for r in range(31, 41):
+        code = ws.cell(row=r, column=4).value   # column D
+        desc = ws.cell(row=r, column=5).value   # column E
+        code_str = str(code).strip() if code is not None else ''
+        desc_str = str(desc).strip() if desc is not None else ''
+        # Skip the legacy headers that some templates still carry in this
+        # range (e.g. "Classification" / "Description") rather than treating
+        # them as data.
+        if code_str.lower() in ('classification', 'classifications', 'image class.division.subdivision'):
+            continue
+        if code_str or desc_str:
+            new_vienna.append({'code': code_str, 'description': desc_str})
+    if new_vienna:
+        out['vienna_classifications'] = new_vienna
+        # Overwrite the legacy joined string with the new authoritative list.
+        out['vienna_classes'] = ', '.join(v['code'] for v in new_vienna if v.get('code'))
+    elif out.get('vienna_classes'):
+        # Older spreadsheet using only C30/C31. Promote the legacy string to
+        # a single-entry structured list so downstream code can iterate.
+        out['vienna_classifications'] = [{'code': out['vienna_classes'], 'description': ''}]
 
     wb.close()
     return out
@@ -695,23 +731,23 @@ def score_trademark_image(r: tuple, target_classes=(11, 12, 35),
     """Initial-review IMAGE score on data alone.
 
     Combined reports need a separate image-threat score independent of the
-    word axis. The user's spec was 'Vienna + mark type + class overlap',
-    so we drop the mark-text component and lean on the cited record's
-    figurative/combined nature plus class overlap, with a small Vienna
-    overlap component when both sides have Vienna codes.
+    word axis. Per the 10 Jun 2026 spec, Vienna code overlap is NOT used at
+    initial-audit time — cited-record Vienna codes are fetched from WIPO
+    only during the forensic layer (see BR-009). Initial audit image risk
+    therefore relies on type + class overlap + status.
 
-    Scoring out of ~13 to match the word axis so the same risk_from_score
-    bands apply:
+    Scoring out of ~10 to match the same risk_from_score bands as the word
+    axis (the 'mark text similarity' component is replaced by 'figurative
+    nature', so pure-word cited marks land near 0 on the image axis):
         Status:   registered +4, pending +3, ended 0
         Type:     figurative +4, combined +3, stylised +2, word 0
         Classes:  +1 per overlapping Nice class (capped via overlap count)
-        Vienna:   +2 per overlapping Vienna group (when both sides have them)
 
     `r` is the same Trademarks-sheet row tuple consumed by score_trademark.
-    `client_vienna` is the operator's Vienna code string for the client image
-    (from order_meta.vienna_classes). Pure-word cited marks score 0 on the
-    type component so they reliably land in the Low/Negligible band on the
-    image axis, even when they're highly relevant on the word axis.
+    `client_vienna` is accepted for forward compatibility — when the forensic
+    layer eventually feeds verified cited-record Vienna codes through, a
+    Vienna-overlap component will be added here. Today it's a documented
+    no-op so initial-audit scoring stays deterministic.
     """
     status = cleanstr(r[2]).lower()
     mtype = cleanstr(r[3]).lower()
