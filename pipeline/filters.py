@@ -37,6 +37,101 @@ def mark_in_scope_for_root(mark_text: str, root: str) -> bool:
     return False
 
 
+# ---------- Type-aware match helpers (added 10 Jun 2026) --------------------
+#
+# Operator-driven match logic for word/domain searches. Each search row in
+# the form carries a `type` (Exact Match / Starts With / Contains / Similar
+# To) and a `phrase`. The four types behave as follows when filtering
+# scrape results into the report:
+#
+#   Exact Match  — mark text equals the phrase (case-insensitive)
+#   Starts With  — mark text equals OR starts with `phrase + space|dash`
+#   Contains     — the phrase appears anywhere inside the mark text
+#   Similar To   — fuzzy match using difflib (ratio >= 0.78 against the
+#                  phrase OR against any whitespace-bounded sub-token of
+#                  the mark). Threshold picked so 'BAMBOO CONNECT' matches
+#                  'BAMBOOCONNECT' and minor typos but not unrelated words.
+#
+# The two helpers below return True/False; callers (process_trademarks,
+# process_companies, process_domains) iterate over the operator's list of
+# search criteria and keep records that match ANY row. If the operator
+# supplies no rows we fall back to the legacy `mark_in_scope_for_root`
+# behaviour so older code paths keep working.
+
+def _fuzzy_ratio(a: str, b: str) -> float:
+    """Cheap similarity score using difflib (stdlib, no extra deps)."""
+    import difflib
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def mark_matches_search_row(mark_text: str, search_type: str, phrase: str) -> bool:
+    """Single-row match check: does `mark_text` match this (type, phrase)?"""
+    if not mark_text or not phrase:
+        return False
+    mt = (mark_text or '').upper().strip()
+    p = (phrase or '').upper().strip()
+    if not p:
+        return False
+    stype = (search_type or '').lower().strip()
+    if stype == 'exact match':
+        return mt == p
+    if stype == 'starts with':
+        return mt == p or mt.startswith(p + ' ') or mt.startswith(p + '-')
+    if stype == 'contains':
+        return p in mt
+    if stype == 'similar to':
+        # Whole-string ratio
+        if _fuzzy_ratio(mt, p) >= 0.78:
+            return True
+        # Token-level: try ratio against each space-delimited token
+        for tok in mt.split():
+            if _fuzzy_ratio(tok, p) >= 0.85:
+                return True
+        return False
+    # Unknown type — fall back to Starts With behaviour (was the old default)
+    return mt == p or mt.startswith(p + ' ')
+
+
+def mark_matches_any(mark_text: str, word_searches: list[dict] | None) -> bool:
+    """True if the mark text matches any row in the operator's word_searches.
+
+    Used by `process_trademarks` and `process_companies` to decide which
+    scraped records to keep in the report. Empty / None search list returns
+    False so callers can fall back to the root-word behaviour.
+    """
+    if not word_searches:
+        return False
+    for ws in word_searches:
+        if mark_matches_search_row(mark_text, ws.get('type', ''),
+                                    ws.get('phrase', '')):
+            return True
+    return False
+
+
+def domain_matches_any(domain_text: str, domain_searches: list[dict] | None) -> bool:
+    """True if any of the URLs/labels in a domain record matches any row in
+    the operator's domain_searches. Re-uses `mark_matches_search_row` because
+    domain types are the same four (Exact / Starts With / Contains / Similar
+    To) — they just operate on URL strings rather than mark text."""
+    if not domain_searches or not domain_text:
+        return False
+    # Strip URL scheme/www so a "Contains acme.com" rule matches
+    # https://www.acme.com/foo. Operators care about the host+path, not the
+    # scheme.
+    text = str(domain_text)
+    for pfx in ('https://', 'http://'):
+        if text.lower().startswith(pfx):
+            text = text[len(pfx):]
+            break
+    if text.lower().startswith('www.'):
+        text = text[4:]
+    for ds in domain_searches:
+        if mark_matches_search_row(text, ds.get('type', ''),
+                                    ds.get('phrase', '')):
+            return True
+    return False
+
+
 def touches_classes(cls_str: str, target: Iterable[int]) -> bool:
     if not cls_str:
         return False
@@ -606,13 +701,20 @@ def risk_from_score(score: int, status: str) -> str:
 
 
 def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
-                       images: dict[int, bytes] | None = None) -> list[dict]:
+                       images: dict[int, bytes] | None = None,
+                       word_searches: list[dict] | None = None) -> list[dict]:
     """Steps 2-4 on the Trademarks sheet.
 
     `images` is an optional {row_number: jpeg_bytes} map from
     extract_trademark_images(); when supplied each scored record carries the
     matching image bytes (if any) under the 'image_bytes' key so the report
     builder can render the mark image inline.
+
+    `word_searches` is the operator's list of {type, phrase, remarks} rows
+    from the audit form. When supplied, marks are filtered with type-aware
+    matching (Exact Match / Starts With / Contains / Similar To) against any
+    row. When omitted, falls back to the legacy `root`-prefix behaviour so
+    older callers keep working.
     """
     images = images or {}
     # Carry the original spreadsheet row number alongside each data row so we
@@ -631,13 +733,19 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
         seen.add(key)
         deduped.append((row_num, r))
 
-    # Apply exclusion rules
+    # Apply exclusion rules — prefer the operator's word_searches list
+    # (type-aware matching) when supplied; otherwise fall back to the
+    # legacy single-root prefix logic.
     filtered = []
     for row_num, r in deduped:
         mark = cleanstr(r[5])
         classes = cleanstr(r[7])
-        if not mark_in_scope_for_root(mark, root):
-            continue
+        if word_searches:
+            if not mark_matches_any(mark, word_searches):
+                continue
+        else:
+            if not mark_in_scope_for_root(mark, root):
+                continue
         if not touches_classes(classes, target_classes):
             continue
         filtered.append((row_num, r))
@@ -668,7 +776,13 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
     return scored
 
 
-def process_companies(rows: list, target_sic: str = '45320', root: str = 'STEALTH') -> list[dict]:
+def process_companies(rows: list, target_sic: str = '45320', root: str = 'STEALTH',
+                      word_searches: list[dict] | None = None) -> list[dict]:
+    """Process the Companies House sheet, filtering by SIC + word_searches.
+
+    Prefers the operator's `word_searches` list (type-aware matching) when
+    supplied; falls back to the legacy `root`-prefix logic otherwise.
+    """
     data = [r for r in rows[1:] if r[0] is not None]
     seen = set()
     deduped = []
@@ -682,8 +796,12 @@ def process_companies(rows: list, target_sic: str = '45320', root: str = 'STEALT
     for r in deduped:
         mark = cleanstr(r[1])
         sic = cleanstr(r[5]) if len(r) > 5 else ''
-        if not mark_in_scope_for_root(mark, root):
-            continue
+        if word_searches:
+            if not mark_matches_any(mark, word_searches):
+                continue
+        else:
+            if not mark_in_scope_for_root(mark, root):
+                continue
         if not has_sic(sic, target_sic):
             continue
         out.append({
@@ -756,7 +874,19 @@ def process_google(rows: list, images: dict[int, bytes] | None = None) -> list[d
     return out
 
 
-def process_domains(rows: list) -> list[dict]:
+def process_domains(rows: list,
+                    domain_searches: list[dict] | None = None) -> list[dict]:
+    """Process the Domains sheet.
+
+    When `domain_searches` is supplied, each record is kept only if at
+    least one of its URLs (or the mark text) matches at least one operator
+    row using type-aware matching (Exact Match / Starts With / Contains /
+    Similar To). Records that don't match any row are dropped — this is
+    what makes the operator's edits in the form propagate into the report.
+
+    When `domain_searches` is None / empty, every record is kept (legacy
+    behaviour). The risk-band heuristic is unchanged.
+    """
     data = [r for r in rows[1:] if r[0] is not None]
     out = []
     for r in data:
@@ -765,6 +895,12 @@ def process_domains(rows: list) -> list[dict]:
         urls = [u for u in urls if u]
         if not urls:
             continue
+        if domain_searches:
+            # Check the mark text and every URL — keep the record if any of
+            # them match any operator row.
+            if not domain_matches_any(mark, domain_searches):
+                if not any(domain_matches_any(u, domain_searches) for u in urls):
+                    continue
         is_led = 'led' in (mark + ''.join(urls)).lower()
         risk, score = ('High Risk', 63) if is_led else ('Medium Risk', 40.76)
         out.append({'mark_text': mark, 'urls': urls, 'risk': risk, 'score': score})
