@@ -245,14 +245,92 @@ with st.form('audit_form', clear_on_submit=False):
     c3, c4 = st.columns(2)
     with c3:
         client_name = st.text_input('Client / company name *', value=meta.get('client_name', ''), help='From Order Form R5.')
-        exact = st.text_input('Exact match search term *', value=meta.get('exact_match', ''), help='From Order Form R14.')
         classes_text = st.text_input('Trademark classes (comma-separated) *', value=meta.get('classes_csv', ''), help='From Order Form G&S Classes rows.')
         sic_code = st.text_input('Client SIC code *', value=meta.get('sic', ''), help='From Order Form R8.')
     with c4:
         deal_id = st.text_input('Deal ID', value=meta.get('deal_id', ''), help='From Order Form R6.')
-        similar = st.text_input('Similar match (Starts With) search term', value=meta.get('starts_with', ''), help='From Order Form R15.')
         countries = st.text_input('Designated countries', value=meta.get('countries', ''), help='From Order Form R10.')
         nature = st.text_input('Nature of business', value=meta.get('nature', ''), help='From Order Form R9.')
+
+    # ----- Word & Domain search criteria (multi-row) -----
+    # Up to 5 rows per block, each with a type (Exact Match / Starts With /
+    # Contains / Similar To) + phrase + optional remarks. Pre-populated from
+    # the Order Form parser (extract_order_metadata captures word_searches /
+    # domain_searches). The operator can edit any row in-place; empty phrase
+    # rows are dropped on submit so blank slots don't pollute the report.
+    SEARCH_TYPES = ['Exact Match', 'Starts With', 'Contains', 'Similar To']
+
+    def _search_block(title: str, caption: str, key_prefix: str,
+                       meta_key: str, n_rows: int = 5):
+        """Render a 5-row block of (type, phrase, remarks). Returns a list of
+        dicts in the same shape the parser produces, only including rows
+        whose phrase is non-empty."""
+        st.markdown(f'**{title}**')
+        st.caption(caption)
+        # Tight header row
+        h0, h1, h2 = st.columns([1.4, 3.0, 2.4])
+        with h0: st.markdown('Type')
+        with h1: st.markdown('Phrase')
+        with h2: st.markdown('Remarks (optional)')
+
+        captured = meta.get(meta_key) or []
+        rows: list[dict] = []
+        for i in range(n_rows):
+            default = captured[i] if i < len(captured) else {'type': 'Exact Match', 'phrase': '', 'remarks': ''}
+            try:
+                type_idx = SEARCH_TYPES.index(default.get('type', 'Exact Match'))
+            except ValueError:
+                type_idx = 0
+            r0, r1, r2 = st.columns([1.4, 3.0, 2.4])
+            with r0:
+                t = st.selectbox(
+                    f'{key_prefix}_type_{i}', SEARCH_TYPES, index=type_idx,
+                    key=f'{key_prefix}_type_{i}', label_visibility='collapsed',
+                )
+            with r1:
+                p = st.text_input(
+                    f'{key_prefix}_phrase_{i}', value=default.get('phrase', ''),
+                    key=f'{key_prefix}_phrase_{i}', label_visibility='collapsed',
+                    placeholder=f'phrase {i+1}',
+                )
+            with r2:
+                rmk = st.text_input(
+                    f'{key_prefix}_remarks_{i}', value=default.get('remarks', ''),
+                    key=f'{key_prefix}_remarks_{i}', label_visibility='collapsed',
+                    placeholder='optional remark',
+                )
+            if (p or '').strip():
+                rows.append({'type': t, 'phrase': p.strip(), 'remarks': (rmk or '').strip()})
+        return rows
+
+    st.subheader('3a. Word Search Criteria *')
+    word_searches_input = _search_block(
+        title='Up to 5 word search phrases (at least 1 required)',
+        caption='Pre-filled from Order Form rows 14–18. Edit any row to override; leave a row blank to drop it.',
+        key_prefix='wordsearch', meta_key='word_searches',
+    )
+
+    st.subheader('3b. Domain Search Criteria')
+    domain_searches_input = _search_block(
+        title='Up to 5 domain search phrases',
+        caption='Pre-filled from Order Form rows 22–26. Edit any row to override; leave a row blank to drop it.',
+        key_prefix='domsearch', meta_key='domain_searches',
+    )
+
+    # Back-compat single-value fields for the few places downstream that
+    # still expect them — the first Exact Match (or first phrase if no Exact)
+    # for "exact", and the first Starts With for "similar".
+    exact = ''
+    similar = ''
+    for w in word_searches_input:
+        if not exact and w['type'].lower() == 'exact match':
+            exact = w['phrase']
+        if not similar and w['type'].lower() == 'starts with':
+            similar = w['phrase']
+    if not exact and word_searches_input:
+        # Fall back to the first phrase (whatever its type) so downstream
+        # report headers don't print blank.
+        exact = word_searches_input[0]['phrase']
 
     search_platforms = st.text_area(
         'Search platforms',
@@ -272,13 +350,18 @@ if submitted:
         ('Client first name', client_first), ('Client last name', client_last),
         ('Client email', client_email), ('Account manager', account_manager),
         ('Report prepared by', prepared_by), ('Client / company name', client_name),
-        ('Exact match search term', exact), ('Trademark classes', classes_text),
+        ('Trademark classes', classes_text),
         ('Client SIC code', sic_code),
     ]:
         if not val.strip():
             missing.append(label)
     if uploaded is None or 'uploaded_path' not in st.session_state:
         missing.append('Scraped data .xlsx file')
+    # At least one word search phrase is required. This replaces the old
+    # "Exact match search term *" required field, since the form now accepts
+    # any of the four search types (Exact / Starts With / Contains / Similar To).
+    if not word_searches_input:
+        missing.append('At least one Word Search phrase (3a)')
 
     if missing:
         st.error('Please complete: ' + ', '.join(missing))
@@ -333,6 +416,22 @@ if submitted:
                 'search_type': 'Word',
                 'mark_label': f'Exact: {exact}   ·   Similar: {similar}' if similar else f'Exact: {exact}',
                 'exact': exact, 'similar': similar,
+                # NEW: structured search criteria — used by report_builder
+                # section 2 to render all 5 word + 5 domain rows. Back-compat
+                # 'exact' / 'similar' single-value fields are still set above
+                # for any caller that hasn't moved over yet.
+                'word_searches': word_searches_input,
+                'domain_searches': domain_searches_input,
+                # Pass through the Word Mark / Image Mark / Vienna fields the
+                # parser captured, so the cover panel can show them.
+                'word_or_image': meta.get('word_or_image', ''),
+                'image_1': meta.get('image_1', ''),
+                'image_1_bytes': meta.get('image_1_bytes'),
+                'image_1_format': meta.get('image_1_format', ''),
+                'image_2': meta.get('image_2', ''),
+                'image_2_bytes': meta.get('image_2_bytes'),
+                'image_2_format': meta.get('image_2_format', ''),
+                'vienna_classes': meta.get('vienna_classes', ''),
                 'classes': classes_text,
                 'sic': sic_code,
                 'nature': nature,
