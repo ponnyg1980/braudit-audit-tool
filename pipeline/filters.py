@@ -659,7 +659,7 @@ def read_sheets(xlsx_path: str) -> dict:
 
 
 def score_trademark(r: tuple, target_classes=(11, 12, 35), root='STEALTH') -> int:
-    """Initial-review score on data alone."""
+    """Initial-review WORD score on data alone."""
     status = cleanstr(r[2]).lower()
     mark = cleanstr(r[5]).upper()
     mtype = cleanstr(r[3])
@@ -690,6 +690,66 @@ def score_trademark(r: tuple, target_classes=(11, 12, 35), root='STEALTH') -> in
     return score
 
 
+def score_trademark_image(r: tuple, target_classes=(11, 12, 35),
+                          client_vienna: str = '') -> int:
+    """Initial-review IMAGE score on data alone.
+
+    Combined reports need a separate image-threat score independent of the
+    word axis. The user's spec was 'Vienna + mark type + class overlap',
+    so we drop the mark-text component and lean on the cited record's
+    figurative/combined nature plus class overlap, with a small Vienna
+    overlap component when both sides have Vienna codes.
+
+    Scoring out of ~13 to match the word axis so the same risk_from_score
+    bands apply:
+        Status:   registered +4, pending +3, ended 0
+        Type:     figurative +4, combined +3, stylised +2, word 0
+        Classes:  +1 per overlapping Nice class (capped via overlap count)
+        Vienna:   +2 per overlapping Vienna group (when both sides have them)
+
+    `r` is the same Trademarks-sheet row tuple consumed by score_trademark.
+    `client_vienna` is the operator's Vienna code string for the client image
+    (from order_meta.vienna_classes). Pure-word cited marks score 0 on the
+    type component so they reliably land in the Low/Negligible band on the
+    image axis, even when they're highly relevant on the word axis.
+    """
+    status = cleanstr(r[2]).lower()
+    mtype = cleanstr(r[3]).lower()
+    classes = cleanstr(r[7])
+    parts = [int(p) for p in re.split(r'[,\s]+', classes) if p.strip().isdigit()]
+    overlap = sum(1 for n in parts if n in target_classes)
+
+    score = 0
+    if status == 'registered':
+        score += 4
+    elif status == 'pending':
+        score += 3
+    # 'ended' contributes 0 (will fall to Negligible regardless)
+
+    # Type component: figurative marks are the primary image threat;
+    # combined marks (word+image) are next; word-only marks do NOT threaten
+    # an image registration so they score 0 here.
+    if 'figurative' in mtype:
+        score += 4
+    elif 'combined' in mtype:
+        score += 3
+    elif 'stylized' in mtype or 'stylised' in mtype:
+        score += 2
+    # word-only: 0
+
+    score += overlap
+
+    # Vienna code overlap: cited record Vienna codes aren't currently
+    # captured by the scrape, so this is a graceful no-op for now. If the
+    # cited record exposes them in a future pipeline upgrade (e.g. via
+    # Signa's mark_feature_type detail or a separate vienna_codes field),
+    # we'll add a +2 per overlapping Vienna group up to a cap.
+    # The hook is here; the data isn't yet.
+    _ = client_vienna  # placeholder for future Vienna scoring
+
+    return score
+
+
 def risk_from_score(score: int, status: str) -> str:
     if status.lower() == 'ended':
         return 'Negligible'
@@ -700,9 +760,28 @@ def risk_from_score(score: int, status: str) -> str:
     return 'Low Risk'
 
 
+def report_type_from_meta(order_meta: dict) -> str:
+    """Return one of 'word_only' | 'logo' | 'combined' based on order_meta.
+
+    The Order Form template's B7 cell carries the report-type indicator:
+        "Word Only"                  -> word_only
+        "Logo or Figurative Mark"    -> logo
+        "Combined Word and Logo"     -> combined
+    Anything else (legacy / unrecognised) defaults to word_only.
+    """
+    label = (order_meta.get('word_or_image') or '').strip().lower()
+    if 'combined' in label:
+        return 'combined'
+    if 'logo' in label or 'figurative' in label or 'image' in label:
+        return 'logo'
+    return 'word_only'
+
+
 def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
                        images: dict[int, bytes] | None = None,
-                       word_searches: list[dict] | None = None) -> list[dict]:
+                       word_searches: list[dict] | None = None,
+                       report_type: str = 'word_only',
+                       client_vienna: str = '') -> list[dict]:
     """Steps 2-4 on the Trademarks sheet.
 
     `images` is an optional {row_number: jpeg_bytes} map from
@@ -715,6 +794,20 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
     matching (Exact Match / Starts With / Contains / Similar To) against any
     row. When omitted, falls back to the legacy `root`-prefix behaviour so
     older callers keep working.
+
+    `report_type` is one of 'word_only' | 'logo' | 'combined' from
+    report_type_from_meta(). Determines whether each cited record produces
+    one row or two:
+        word_only -> one row per record, risk = word_risk
+        logo      -> one row per record, risk = image_risk
+        combined  -> two rows when BOTH axes are non-Negligible (Low or
+                     higher), each tagged with 'threat_type' = 'Word' or
+                     'Logo'. Single row when only one axis is non-Negligible.
+                     If both are Negligible, single row labelled by the
+                     higher-scoring axis (ties → Word).
+
+    `client_vienna` is the operator's Vienna code string for the client
+    image (from order_meta.vienna_classes). Used by image scoring.
     """
     images = images or {}
     # Carry the original spreadsheet row number alongside each data row so we
@@ -750,14 +843,21 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             continue
         filtered.append((row_num, r))
 
-    # Score
+    # Score every record on BOTH axes (word + image). Single-axis reports
+    # pick one; combined reports emit one or two rows per record per the
+    # duplication rule.
     scored = []
     for row_num, r in filtered:
-        s = score_trademark(r, target_classes, root)
-        scored.append({
+        status_str = cleanstr(r[2])
+        word_score = score_trademark(r, target_classes, root)
+        image_score = score_trademark_image(r, target_classes, client_vienna)
+        word_risk = risk_from_score(word_score, status_str)
+        image_risk = risk_from_score(image_score, status_str)
+
+        base_record = {
             'office': cleanstr(r[0]),
             'app': cleanstr(r[1]),
-            'status': cleanstr(r[2]),
+            'status': status_str,
             'type': cleanstr(r[3]),
             'mark': cleanstr(r[5]),
             'filing': cleanstr(r[6]),
@@ -765,14 +865,47 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             'owner': cleanstr(r[8]),
             'industry': cleanstr(r[11]),
             'goods': cleanstr(r[12]),
-            'score': s,
-            'risk': risk_from_score(s, cleanstr(r[2])),
             'image_bytes': images.get(row_num),
             'source_row': row_num,
-        })
+            # Always expose BOTH scores so downstream code can show them
+            # side by side when useful, even in single-axis reports.
+            'word_score': word_score, 'word_risk': word_risk,
+            'image_score': image_score, 'image_risk': image_risk,
+        }
 
-    # Sort: live first by score desc, dead last
-    scored.sort(key=lambda x: (0 if x['risk'] != 'Negligible' else 1, -x['score'], x['mark']))
+        def _emit(record_axis: str, score: int, risk: str):
+            entry = dict(base_record)
+            entry['score'] = score
+            entry['risk'] = risk
+            entry['threat_type'] = record_axis  # 'Word' or 'Logo'
+            scored.append(entry)
+
+        if report_type == 'word_only':
+            _emit('Word', word_score, word_risk)
+        elif report_type == 'logo':
+            _emit('Logo', image_score, image_risk)
+        else:  # combined
+            word_active = word_risk != 'Negligible'
+            image_active = image_risk != 'Negligible'
+            if word_active and image_active:
+                # Duplicate the record so both threats are reviewed independently.
+                _emit('Word', word_score, word_risk)
+                _emit('Logo', image_score, image_risk)
+            elif word_active:
+                _emit('Word', word_score, word_risk)
+            elif image_active:
+                _emit('Logo', image_score, image_risk)
+            else:
+                # Both Negligible (e.g. status=Ended). Single row on the
+                # higher-scoring axis, ties go to Word.
+                if image_score > word_score:
+                    _emit('Logo', image_score, image_risk)
+                else:
+                    _emit('Word', word_score, word_risk)
+
+    # Sort: live (non-Negligible) first by score desc, then by mark text.
+    # Ties between Word and Logo duplicates keep their natural order.
+    scored.sort(key=lambda x: (0 if x['risk'] != 'Negligible' else 1, -x['score'], x['mark'], x.get('threat_type', '')))
     return scored
 
 
