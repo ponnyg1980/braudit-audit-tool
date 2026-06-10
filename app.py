@@ -14,7 +14,7 @@ from pipeline.filters import (
     read_sheets, process_trademarks, process_companies,
     process_google, process_domains, process_social,
     extract_specific_terms, extract_order_metadata,
-    extract_trademark_images,
+    extract_trademark_images, extract_google_image_cells,
 )
 from pipeline.report_builder import build_step5_report
 from pipeline.forensic import SignaClient, verify_records
@@ -393,7 +393,11 @@ if submitted:
                 target_sic=sic_code.strip(),
                 root=root_word,
             )
-            google = process_google(sheets.get('Google', [[]]))
+            # Picture-in-Cell images on the Google sheet (column A) — modern
+            # Excel rich-values that openpyxl reports as #VALUE!. Extract them
+            # so the report can render the actual image instead of an error.
+            google_imgs = extract_google_image_cells(tmp_path)
+            google = process_google(sheets.get('Google', [[]]), images=google_imgs)
             domains = process_domains(sheets.get('Domains', [[]]))
             social = process_social(sheets.get('Social', [[]]))
 
