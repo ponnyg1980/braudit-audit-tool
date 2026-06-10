@@ -453,16 +453,26 @@ def build_step5_report(*, order_meta: dict,
 
     # 3a Google
     add_heading(doc, '3a. Google Search Results', level=2)
-    add_para(doc, 'Word Searches use Google\u2019s matching criteria. Image Searches use Google Lens to identify similar images online.', size=10)
+    add_para(doc, 'Word Searches use Google\u2019s matching criteria. Image Searches use Google Lens to identify similar images online. Image results render the actual image found; word results render the keyword.', size=10)
     if google:
+        # The Keyword column renders EITHER an inline image (when the
+        # original Google sheet had a Picture-in-Cell rich-value image at
+        # column A) OR the text keyword. add_table's image-cell support
+        # recognises a dict carrying 'image_bytes'.
+        def _kw_cell(g: dict):
+            img = g.get('image_bytes')
+            if img:
+                return {'image_bytes': img, 'width_in': 1.4}
+            return g.get('keyword', '')
+
         # Dropped the legacy "Score" column \u2014 it carried a magic number (30.04
         # / 44.35) from the original STEALTH-LED scoring code that has no
         # documented meaning to clients. Risk band carries the signal; the
         # Link column now gets the recovered width so URLs stop clipping
         # off the right margin. Widths sum to 7.0" (was 7.8" and overflowed).
-        g_body = [[g['keyword'], g['risk'], g['link']] for g in google]
-        add_table(doc, [2.4, 1.4, 3.2],
-                  ['Keyword', 'Risk', 'Link'],
+        g_body = [[_kw_cell(g), g['risk'], g['link']] for g in google]
+        add_table(doc, [1.6, 1.4, 4.0],
+                  ['Keyword / Image', 'Risk', 'Link'],
                   g_body, risk_col_index=1,
                   hyperlink_col_indexes={2: lambda row: row[2]},
                   font_size=10)
