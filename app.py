@@ -475,6 +475,11 @@ if submitted:
                 'image_2_bytes': meta.get('image_2_bytes'),
                 'image_2_format': meta.get('image_2_format', ''),
                 'vienna_classes': meta.get('vienna_classes', ''),
+                # NEW (10 Jun 2026): structured Vienna classifications from
+                # D31:D40 + E31:E40 of the Order Form. The report renders
+                # these as a small (code, description) table on the cover
+                # for Image and Combined reports.
+                'vienna_classifications': meta.get('vienna_classifications', []),
                 'classes': classes_text,
                 'sic': sic_code,
                 'nature': nature,
