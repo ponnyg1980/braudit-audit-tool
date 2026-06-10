@@ -30,6 +30,11 @@ from .report_builder import (
     set_cell_bg, set_cell_border, risk_fill, add_hyperlink, run,
     add_para, add_heading,
 )
+from .brand_tokens import (
+    BRAND_PINK, BRAND_NAVY, BRAND_SLATE, BRAND_LIGHT_SLATE,
+    BRAND_BODY, BRAND_WHITE, BRAND_FONT,
+    BRAND_TAGLINE, LOGO_PATH_FULL, logo_exists,
+)
 from .forensic_narrative import ForensicReport, ReportType
 
 
@@ -49,7 +54,7 @@ def _h3(doc, text):
     return add_heading(doc, text, level=3)
 
 
-def _make_kv_table(doc, rows, *, key_width=2.2, val_width=5.3, key_fill='1F3864'):
+def _make_kv_table(doc, rows, *, key_width=2.0, val_width=5.0, key_fill=BRAND_NAVY):
     """Standard two-column key/value table used in cover, exec summary etc."""
     t = doc.add_table(rows=len(rows), cols=2)
     t.autofit = False
@@ -64,7 +69,7 @@ def _make_kv_table(doc, rows, *, key_width=2.2, val_width=5.3, key_fill='1F3864'
             p.paragraph_format.space_after = Pt(0)
             if ci == 0:
                 set_cell_bg(cell, key_fill)
-                run(p, str(txt), bold=True, color='FFFFFF', size=10)
+                run(p, str(txt), bold=True, color=BRAND_WHITE, size=10)
             else:
                 lines = str(txt).split('\n')
                 run(p, lines[0], size=10)
@@ -89,13 +94,26 @@ def _safe_get(d, *keys, default=''):
 
 def _render_cover(doc, report: ForensicReport, order_meta: dict):
     """Title + order meta table at the start of the document."""
+    # TMH logo at top, just like the initial report
+    if logo_exists(LOGO_PATH_FULL):
+        p_logo = doc.add_paragraph()
+        p_logo.paragraph_format.space_after = Pt(6)
+        p_logo.add_run().add_picture(LOGO_PATH_FULL, width=Inches(2.4))
+
     title_label = ('Forensic Audit \u2014 Pre-Application Trademark Risk'
                    if report.report_type == ReportType.PRE_APPLICATION
                    else 'Forensic Audit \u2014 Post-Registration Infringement Review')
 
+    # Mark Type indicator \u2014 Word Mark vs Image Mark \u2014 so the cover matches
+    # the initial report's convention.
+    word_or_image = (order_meta.get('word_or_image') or '').strip().lower()
+    is_image_report = 'image' in word_or_image or 'logo' in word_or_image or 'figurative' in word_or_image
+    mark_type_label = 'Image Mark' if is_image_report else 'Word Mark'
+
     add_para(doc, order_meta.get('client_name', ''), bold=True,
-             color='1F3864', size=16, space_after=2)
-    add_para(doc, title_label, bold=True, size=18, space_after=10)
+             color=BRAND_NAVY, size=16, space_after=2)
+    add_para(doc, f'{title_label} \u2014 {mark_type_label}',
+             bold=True, color=BRAND_NAVY, size=18, space_after=10)
 
     brand_ref = order_meta.get('brand_reference') or report.client_brand.get('brand_reference') or '—'
     report_ref = order_meta.get('report_reference') or '—'
@@ -245,7 +263,9 @@ def _render_scoring_table(doc, report: ForensicReport):
     )
 
     headers = ['Office', 'App #', 'Mark Text', 'Owner', 'Status', 'Classes', 'Score', 'Risk']
-    widths = [0.55, 0.85, 1.4, 1.7, 0.85, 0.6, 0.5, 0.55]   # sums to 7.0"
+    # App # widened from 0.85 → 1.05 so UK numbers (UK00003076168 = 13 chars)
+    # fit. Recovered from Owner (1.7 → 1.5) and Classes (0.6 → 0.5). Sums to 7.0".
+    widths = [0.55, 1.05, 1.40, 1.50, 0.85, 0.50, 0.50, 0.65]
     t = doc.add_table(rows=1 + len(pairs), cols=len(headers))
     t.autofit = False
 
@@ -254,13 +274,13 @@ def _render_scoring_table(doc, report: ForensicReport):
     for i, h in enumerate(headers):
         c = hdr.cells[i]
         c.text = ''
-        set_cell_bg(c, '1F3864')
+        set_cell_bg(c, BRAND_NAVY)
         set_cell_border(c)
         c.width = Inches(widths[i])
         c.vertical_alignment = WD_ALIGN_VERTICAL.TOP
         p = c.paragraphs[0]
         p.paragraph_format.space_after = Pt(0)
-        run(p, h, bold=True, color='FFFFFF', size=8)
+        run(p, h, bold=True, color=BRAND_WHITE, size=8)
 
     # Body rows
     for ri, (record, score) in enumerate(pairs, start=1):
@@ -322,7 +342,7 @@ def _render_one_card(doc, record, score, commentary: str, report_type: ReportTyp
     p.paragraph_format.space_before = Pt(8)
     p.paragraph_format.space_after = Pt(2)
     run(p, f'{record.mark_text or "(unknown mark)"}  \u2014  ',
-        bold=True, color='1F3864', size=13)
+        bold=True, color=BRAND_NAVY, size=13)
     label = f'{record.office} {record.app_number}'
     if record.source_url:
         add_hyperlink(p, record.source_url, label, font_size=11)
@@ -381,14 +401,14 @@ def _render_one_card(doc, record, score, commentary: str, report_type: ReportTyp
                   if report_type == ReportType.PRE_APPLICATION
                   else 'Enforcement Priority \u2014 Forensic Commentary')
     add_para(doc, label_text, bold=True, size=10, space_after=2,
-             color='1F3864')
+             color=BRAND_NAVY)
     if commentary:
         for para in commentary.split('\n\n'):
             if para.strip():
                 add_para(doc, para.strip(), size=10)
     else:
         add_para(doc, '[Commentary unavailable for this record.]',
-                 italic=True, color='595959', size=10)
+                 italic=True, color=BRAND_LIGHT_SLATE, size=10)
 
 
 # ---------- 8. Recommended Specification (Pre) / Recommended Actions (Post) ----------
@@ -409,7 +429,7 @@ def _render_pre_recommended_spec(doc, report: ForensicReport):
             add_para(doc, str(text), size=11)
     else:
         add_para(doc, '[No recommended specification generated.]',
-                 italic=True, color='595959', size=10)
+                 italic=True, color=BRAND_LIGHT_SLATE, size=10)
 
 
 def _render_post_recommended_actions(doc, report: ForensicReport):
@@ -430,12 +450,12 @@ def _render_post_recommended_actions(doc, report: ForensicReport):
         for i, h in enumerate(headers):
             c = t.rows[0].cells[i]
             c.text = ''
-            set_cell_bg(c, '1F3864')
+            set_cell_bg(c, BRAND_NAVY)
             set_cell_border(c)
             c.width = Inches(widths[i])
             p = c.paragraphs[0]
             p.paragraph_format.space_after = Pt(0)
-            run(p, h, bold=True, color='FFFFFF', size=10)
+            run(p, h, bold=True, color=BRAND_WHITE, size=10)
         # Rows
         for ai, action_obj in enumerate(actions, start=1):
             record_id = (action_obj.get('record_id') if isinstance(action_obj, dict) else '') or ''
@@ -468,7 +488,7 @@ def _render_post_recommended_actions(doc, report: ForensicReport):
                     run(p2, line, size=10)
     else:
         add_para(doc, '[No recommended actions generated.]',
-                 italic=True, color='595959', size=10)
+                 italic=True, color=BRAND_LIGHT_SLATE, size=10)
 
 
 # ---------- 9. Final Recommendation ----------
@@ -492,7 +512,7 @@ def _render_signoff(doc, order_meta: dict):
     add_para(doc, 'Trademark Intelligence & Brand Protection Specialist',
              size=11, space_after=2)
     add_para(doc, 'Braudit Trademark Intelligence Division',
-             italic=True, color='1F3864', size=11, space_after=8)
+             italic=True, color=BRAND_NAVY, size=11, space_after=8)
     if account_manager:
         add_para(doc, f'Account Manager:  {account_manager}', size=11, space_after=2)
     add_para(doc, f'Date:  {date.today().strftime("%d %B %Y")}',
@@ -503,7 +523,7 @@ def _render_signoff(doc, order_meta: dict):
         'does not substitute for specialist in-jurisdiction trademark counsel. '
         'Braudit recommends specialist counsel handling for any subsequent '
         'filing, opposition or enforcement action arising from this audit.'
-    ), italic=True, color='595959', size=10)
+    ), italic=True, color=BRAND_LIGHT_SLATE, size=10)
 
 
 # ---------- top-level entrypoint ----------
