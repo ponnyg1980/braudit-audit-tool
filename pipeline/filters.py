@@ -329,6 +329,130 @@ def extract_order_metadata(xlsx_path: str) -> dict:
     return out
 
 
+def extract_google_image_cells(xlsx_path: str) -> dict[int, bytes]:
+    """Extract Excel 'Picture in Cell' images from the Google sheet, column A.
+
+    Modern Excel (365+) supports inserting images directly INTO a cell as a
+    rich value (the so-called "Picture in Cell" feature). Cells using this
+    feature look like Excel error cells to most XLSX readers — openpyxl
+    reports them as `#VALUE!` — but the image bytes are present in
+    `xl/media/imageN.png` and referenced via `xl/richData/richValueRel.xml`.
+
+    Each affected cell carries a `vm="N"` attribute on its `<c>` element
+    where N is a 1-based index into richValueRel. richValueRel.xml has
+    `<rel r:id="rIdX"/>` entries in order, and `xl/richData/_rels/
+    richValueRel.xml.rels` maps each rId to a path under xl/media/.
+
+    Returns {row_number: image_bytes} for every column-A cell on the
+    Google sheet that resolves to a rich-value image. Returns {} if the
+    workbook has no rich values, the Google sheet is missing, or any
+    parse step fails — failure is silent so a malformed file never crashes
+    the audit pipeline.
+
+    Why direct zip+XML parsing rather than openpyxl: openpyxl's high-level
+    cell API exposes the cached error value but not the `vm` attribute,
+    and `ws._images` only contains drawing-anchored images, not rich-value
+    images. We have to read the underlying OOXML structures directly.
+    """
+    out: dict[int, bytes] = {}
+    try:
+        import zipfile
+        import xml.etree.ElementTree as ET
+        with zipfile.ZipFile(xlsx_path) as zf:
+            # ---- Step 1: ordered list of rIds from richValueRel.xml ----
+            try:
+                rel_xml = zf.read('xl/richData/richValueRel.xml')
+                rels_xml = zf.read('xl/richData/_rels/richValueRel.xml.rels')
+            except KeyError:
+                return out  # workbook has no rich values
+            ns_r = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
+            rel_root = ET.fromstring(rel_xml)
+            rel_ids: list[str] = []  # index 0 corresponds to vm="1"
+            for child in rel_root:
+                rid = child.get(f'{ns_r}id')
+                if rid:
+                    rel_ids.append(rid)
+
+            # ---- Step 2: map rId -> image path inside the zip ----
+            rels_root = ET.fromstring(rels_xml)
+            id_to_image_path: dict[str, str] = {}
+            for rel in rels_root:
+                rid = rel.get('Id')
+                target = rel.get('Target') or ''
+                if not rid or not target:
+                    continue
+                # Targets are relative to xl/richData/, e.g. "../media/image1.png"
+                if target.startswith('../'):
+                    full = 'xl/' + target[3:]
+                elif target.startswith('/'):
+                    full = target.lstrip('/')
+                else:
+                    full = 'xl/richData/' + target
+                id_to_image_path[rid] = full
+
+            # ---- Step 3: locate the Google sheet's XML file via rels ----
+            # Use the rId from xl/workbook.xml + xl/_rels/workbook.xml.rels so
+            # we don't depend on the sheet's position number matching its
+            # filename (Excel sometimes diverges).
+            ns_x = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+            wb_xml = ET.fromstring(zf.read('xl/workbook.xml'))
+            google_rid = None
+            for sheet in wb_xml.findall(f'{ns_x}sheets/{ns_x}sheet'):
+                if (sheet.get('name') or '').strip().lower() == 'google':
+                    google_rid = sheet.get(f'{ns_r}id')
+                    break
+            if not google_rid:
+                return out
+            wb_rels = ET.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+            sheet_path = None
+            for rel in wb_rels:
+                if rel.get('Id') == google_rid:
+                    target = rel.get('Target') or ''
+                    # Target like "worksheets/sheet4.xml" — prefix with xl/
+                    if target.startswith('/'):
+                        sheet_path = target.lstrip('/')
+                    else:
+                        sheet_path = 'xl/' + target
+                    break
+            if not sheet_path:
+                return out
+            try:
+                sheet_xml = zf.read(sheet_path)
+            except KeyError:
+                return out
+
+            # ---- Step 4: walk column-A cells with a vm attribute ----
+            sheet_root = ET.fromstring(sheet_xml)
+            for row in sheet_root.findall(f'{ns_x}sheetData/{ns_x}row'):
+                for cell in row.findall(f'{ns_x}c'):
+                    ref = cell.get('r') or ''  # e.g. "A5"
+                    if not ref.startswith('A') or len(ref) < 2 or not ref[1:].isdigit():
+                        continue
+                    row_num = int(ref[1:])
+                    vm = cell.get('vm')
+                    if not vm:
+                        continue
+                    try:
+                        vm_idx = int(vm) - 1
+                    except ValueError:
+                        continue
+                    if not (0 <= vm_idx < len(rel_ids)):
+                        continue
+                    img_path = id_to_image_path.get(rel_ids[vm_idx])
+                    if not img_path:
+                        continue
+                    try:
+                        blob = zf.read(img_path)
+                    except KeyError:
+                        continue
+                    if blob:
+                        out[row_num] = blob
+    except Exception:
+        # Best-effort extraction — any parse failure simply means no images.
+        return out
+    return out
+
+
 def extract_trademark_images(xlsx_path: str) -> dict[int, bytes]:
     """Pull floating images anchored to column E (the 'Image' column) of the
     Trademarks sheet.
@@ -573,18 +697,62 @@ def process_companies(rows: list, target_sic: str = '45320', root: str = 'STEALT
     return out
 
 
-def process_google(rows: list) -> list[dict]:
-    data = [r for r in rows[1:] if r[0] is not None]
+def process_google(rows: list, images: dict[int, bytes] | None = None) -> list[dict]:
+    """Process the Google sheet into scored records.
+
+    `images` is the {row_number: image_bytes} map returned by
+    extract_google_image_cells(); when supplied, any data row whose
+    column-A cell carries a rich-value (Picture-in-Cell) image gets an
+    `image_bytes` field so the report can render the keyword cell as an
+    inline image instead of the literal '#VALUE!' Excel exposes.
+
+    Inherits-from-prior keyword fallback: if column A is an Excel error
+    value (#VALUE!, #REF!, etc.), the displayed keyword falls back to the
+    last non-error value seen in the sheet (typically the parent search
+    term).
+    """
+    images = images or {}
+    # Excel error indicators that mean "this cell did not evaluate" — fall
+    # back to inheriting the previous valid keyword for display.
+    EXCEL_ERRORS = {'#VALUE!', '#REF!', '#N/A', '#NAME?', '#NULL!', '#NUM!', '#DIV/0!'}
+    last_valid_keyword = ''
     out = []
-    for r in data:
-        kw = cleanstr(r[0])
-        mark = cleanstr(r[1])
-        link = cleanstr(r[2])
-        if 'led' in (kw + mark).lower():
+    # Rows in the sheet are 1-indexed and row 1 is the header, so the first
+    # data row in the spreadsheet is row 2.
+    for spreadsheet_row, r in enumerate(rows[1:], start=2):
+        if r[0] is None and (len(r) < 2 or r[1] is None):
+            continue
+        kw_raw = cleanstr(r[0])
+        mark = cleanstr(r[1]) if len(r) > 1 else ''
+        link = cleanstr(r[2]) if len(r) > 2 else ''
+        img_bytes = images.get(spreadsheet_row)
+        # Resolve the displayed keyword:
+        #   - if there's an image, the keyword is the image (caller will
+        #     render image_bytes; we still set keyword to the inherited value
+        #     so the report has a textual fallback if the image fails)
+        #   - if kw is a known Excel error, inherit from the previous valid
+        #   - otherwise use kw as-is and remember it for next time
+        if img_bytes:
+            keyword = last_valid_keyword or mark or ''
+        elif kw_raw in EXCEL_ERRORS:
+            keyword = last_valid_keyword or mark or '(keyword unavailable)'
+        else:
+            keyword = kw_raw
+            if keyword:
+                last_valid_keyword = keyword
+
+        if 'led' in (keyword + mark).lower():
             risk, score = 'Medium Risk', 44.35
         else:
             risk, score = 'Low Risk', 30.04
-        out.append({'keyword': kw, 'mark_text': mark, 'link': link, 'risk': risk, 'score': score})
+        out.append({
+            'keyword': keyword,
+            'mark_text': mark,
+            'link': link,
+            'risk': risk,
+            'score': score,
+            'image_bytes': img_bytes,
+        })
     return out
 
 
