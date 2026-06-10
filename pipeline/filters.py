@@ -277,15 +277,25 @@ def extract_order_metadata(xlsx_path: str) -> dict:
     domain_ctx = False
 
     # Recognised search-criterion types in column A of the words/domains
-    # blocks. Anything in this set is treated as a (type, phrase) row when
-    # we're inside text or domain context.
-    KNOWN_SEARCH_TYPES = {
-        'exact match', 'starts with', 'contains', 'similar to',
+    # blocks. The map is many → one so different template generations can
+    # all funnel into the canonical four labels. Anything outside this set
+    # (e.g. 'Contains2' from numbered template slots) is treated as 'not a
+    # recognised search row' and skipped.
+    SEARCH_TYPE_ALIASES = {
+        'exact match':  'Exact Match',
+        'starts with':  'Starts With',
+        'start with':   'Starts With',     # Friars template typo / variant
+        'contains':     'Contains',
+        'similar to':   'Similar To',
+        'similar match': 'Similar To',     # Friars template variant
     }
 
     # Class list rows start with a class number like '11 - Heating Components'.
+    # Capture flips ON when the "G&S Classes" header is seen (templates put
+    # this block at varying rows — R26 in Friars, R33 in Woodcross).
     import re
     class_nums: list[int] = []
+    g_s_classes_seen = False
 
     for r in range(1, min(ws.max_row + 1, 100)):
         a = ws.cell(row=r, column=1).value
@@ -303,50 +313,70 @@ def extract_order_metadata(xlsx_path: str) -> dict:
             out[label_map[a_key]] = _real_value(b)
             continue
 
-        # Context switching for the dual 'Exact Match' labels
-        if 'search criteria' in a_key and 'text' in a_key:
+        # Context switching for the dual 'Exact Match' labels. Multiple
+        # template generations are supported:
+        #   "Search Criteria (Text)"     (Woodcross / older)
+        #   "Word Search Criteria"       (Friars / newer)
+        # Same for domain headers.
+        is_text_header = (
+            ('search criteria' in a_key and 'text' in a_key) or
+            'word search criteria' in a_key or
+            ('word search' in a_key and 'criteria' not in a_key)
+        )
+        is_domain_header = (
+            ('search criteria' in a_key and 'domain' in a_key) or
+            'domain search criteria' in a_key
+        )
+        if is_text_header:
             text_ctx, domain_ctx = True, False
             continue
-        if 'search criteria' in a_key and 'domain' in a_key:
+        if is_domain_header:
             text_ctx, domain_ctx = False, True
             continue
         if 'image search' in a_key or 'g&s classes' in a_key:
             text_ctx = domain_ctx = False
+            # Once we see the G&S Classes header, mark subsequent rows as
+            # eligible for class-number capture. Different templates put
+            # this block at different rows (R26 in Friars, R33 in Woodcross),
+            # so an absolute-row threshold no longer works.
+            if 'g&s classes' in a_key:
+                g_s_classes_seen = True
             # fall through so we can still match 'image mark 1' / 'image mark 2'
             # against the explicit handlers below.
 
         # Words block: capture every (type, phrase) pair, not just Exact /
         # Starts With. Phrase must be non-empty; remarks (column C) optional.
-        if text_ctx and a_key in KNOWN_SEARCH_TYPES:
+        # SEARCH_TYPE_ALIASES canonicalises template variants like "Start
+        # With" → "Starts With" and "Similar Match" → "Similar To".
+        canonical_type = SEARCH_TYPE_ALIASES.get(a_key)
+        if text_ctx and canonical_type:
             phrase = (str(b).strip() if b is not None else '')
             if phrase:
                 remarks = (str(c).strip() if c is not None else '')
-                type_label = a_str  # preserve original casing for display
                 out['word_searches'].append({
-                    'type': type_label,
+                    'type': canonical_type,
                     'phrase': phrase,
                     'remarks': remarks,
                 })
                 # Back-compat: populate single-value fields from the first
                 # matching entry of each type so the existing UI doesn't break.
-                if a_key == 'exact match' and not out['exact_match']:
+                if canonical_type == 'Exact Match' and not out['exact_match']:
                     out['exact_match'] = phrase
-                elif a_key == 'starts with' and not out['starts_with']:
+                elif canonical_type == 'Starts With' and not out['starts_with']:
                     out['starts_with'] = phrase
             continue
 
         # Domains block: same shape as words.
-        if domain_ctx and a_key in KNOWN_SEARCH_TYPES:
+        if domain_ctx and canonical_type:
             phrase = (str(b).strip() if b is not None else '')
             if phrase:
                 remarks = (str(c).strip() if c is not None else '')
-                type_label = a_str
                 out['domain_searches'].append({
-                    'type': type_label,
+                    'type': canonical_type,
                     'phrase': phrase,
                     'remarks': remarks,
                 })
-                if a_key == 'exact match' and not out['domain_exact']:
+                if canonical_type == 'Exact Match' and not out['domain_exact']:
                     out['domain_exact'] = phrase
             continue
 
@@ -366,9 +396,11 @@ def extract_order_metadata(xlsx_path: str) -> dict:
                 out['vienna_classes'] = vienna
             continue
 
-        # Class row: 'NN - Description'
+        # Class row: 'NN - Description'. Only capture after the G&S Classes
+        # header has been seen — different templates put this block at very
+        # different rows so an absolute-row threshold is unreliable.
         m = re.match(r'^(\d{1,2})\b', a_str)
-        if m and r >= 33:  # G&S Classes block starts around R33
+        if m and g_s_classes_seen:
             class_nums.append(int(m.group(1)))
             continue
 
@@ -426,34 +458,43 @@ def extract_order_metadata(xlsx_path: str) -> dict:
             # break the rest of the order-form parse.
             continue
 
-    # ---- Vienna classifications block (D31:D40 / E31:E40) -----------------
-    # Template update 10 Jun 2026. Up to 10 Vienna classification rows live
-    # in columns D and E starting at row 31 (row 30 is the "Classification /
-    # Description" header in newer templates). Build the structured
-    # vienna_classifications list AND populate the legacy `vienna_classes`
-    # joined string. Rows where both D and E are empty are skipped.
-    # If D31:D40 yields nothing AND the legacy C30/C31 path captured a value
-    # earlier in the loop, we leave vienna_classes as-is for back-compat.
+    # ---- Vienna classifications block (pattern scan of column D) ----------
+    # Different template generations put Vienna data at different rows:
+    #   Older templates: D31:D40 + E31:E40
+    #   Friars template: D23:D34 (inline with the Image section)
+    # Rather than hard-coding rows, scan column D for cells that match the
+    # Vienna code pattern (digits separated by 1-2 dots, e.g. "29.1.8" or
+    # "26.13.25"). Capture the matching column-E cell as the description.
+    # Skip header rows ("Classification", "Description", etc.).
+    vienna_code_re = re.compile(r'^\d+\.\d+(\.\d+)?$')
     new_vienna: list[dict] = []
-    for r in range(31, 41):
+    for r in range(1, min(ws.max_row + 1, 60)):
         code = ws.cell(row=r, column=4).value   # column D
-        desc = ws.cell(row=r, column=5).value   # column E
-        code_str = str(code).strip() if code is not None else ''
-        desc_str = str(desc).strip() if desc is not None else ''
-        # Skip the legacy headers that some templates still carry in this
-        # range (e.g. "Classification" / "Description") rather than treating
-        # them as data.
-        if code_str.lower() in ('classification', 'classifications', 'image class.division.subdivision'):
+        if code is None:
             continue
-        if code_str or desc_str:
-            new_vienna.append({'code': code_str, 'description': desc_str})
+        code_str = str(code).strip()
+        # Skip blank cells and header text
+        if not code_str:
+            continue
+        if code_str.lower() in (
+            'classification', 'classifications',
+            'image class.division.subdivision',
+            'description', 'descriptions',
+        ):
+            continue
+        # Only accept values that look like Vienna codes
+        if not vienna_code_re.match(code_str):
+            continue
+        desc = ws.cell(row=r, column=5).value   # column E
+        desc_str = str(desc).strip() if desc is not None else ''
+        new_vienna.append({'code': code_str, 'description': desc_str})
     if new_vienna:
         out['vienna_classifications'] = new_vienna
         # Overwrite the legacy joined string with the new authoritative list.
         out['vienna_classes'] = ', '.join(v['code'] for v in new_vienna if v.get('code'))
     elif out.get('vienna_classes'):
-        # Older spreadsheet using only C30/C31. Promote the legacy string to
-        # a single-entry structured list so downstream code can iterate.
+        # Legacy spreadsheets using only C30/C31. Promote the joined string
+        # to a single-entry structured list so downstream code can iterate.
         out['vienna_classifications'] = [{'code': out['vienna_classes'], 'description': ''}]
 
     wb.close()
@@ -644,12 +685,18 @@ def extract_specific_terms(xlsx_path: str) -> dict[int, str]:
     """Read the Order Form sheet and pull the client's specific Goods & Services
     terms per class.
 
-    The Braudit order form lists classes from row 34 onwards in the format:
+    The Braudit order form lists classes immediately after the "G&S Classes"
+    header in the format:
         Column A: '11 - Heating Components'
         Column B: 'LED light strips; LED underwater lights; ...'
 
-    Parsing stops at the first empty A cell, or when A starts with anything
-    other than a class-number-prefixed entry (e.g. 'Date of Most Recent Search').
+    Different templates place this block at different rows (R34+ in
+    Woodcross-style templates, R27+ in Friars-style templates) so we scan
+    for the "G&S Classes" header first and start capturing from the row
+    after. Parsing stops at the first empty A cell after we've started
+    capturing, or when A starts with anything other than a class-number-
+    prefixed entry (e.g. 'Date of Most Recent Search').
+
     Returns a dict mapping class_number -> specific terms text.
     """
     import openpyxl
@@ -659,23 +706,40 @@ def extract_specific_terms(xlsx_path: str) -> dict[int, str]:
         return {}
     ws = wb['Order Form']
     out: dict[int, str] = {}
-    for r in range(34, 80):  # safety upper bound
+
+    # First pass: find the G&S Classes header row
+    header_row = None
+    for r in range(1, min(ws.max_row + 1, 80)):
+        a = ws.cell(row=r, column=1).value
+        if a and 'g&s classes' in str(a).strip().lower():
+            header_row = r
+            break
+    if header_row is None:
+        wb.close()
+        return out
+
+    # Second pass: capture class-number rows starting just after the header
+    started = False
+    for r in range(header_row + 1, min(ws.max_row + 1, header_row + 30)):
         a = ws.cell(row=r, column=1).value
         b = ws.cell(row=r, column=2).value
         if a is None:
-            # Empty row \u2014 keep looking a couple more in case of stray gaps,
-            # but a row with no class number ends the block.
-            if r > 34 and not out:
-                continue
-            break
+            # Empty row \u2014 keep scanning a few more in case the header is
+            # immediately followed by a blank, but once we've started
+            # capturing, an empty row ends the block.
+            if started:
+                break
+            continue
         a_str = str(a).strip()
-        # Match leading class number: e.g. '11 - Heating Components' or '11 \u2014 Heating'
         m = re.match(r'^(\d{1,2})\b', a_str)
         if not m:
-            break  # non-class row encountered (e.g. 'Date of Most Recent Search')
+            if started:
+                break  # non-class row encountered after the block
+            continue
         cls = int(m.group(1))
         terms = str(b).strip() if b else ''
         out[cls] = terms
+        started = True
     wb.close()
     return out
 
@@ -862,19 +926,28 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
         seen.add(key)
         deduped.append((row_num, r))
 
-    # Apply exclusion rules — prefer the operator's word_searches list
-    # (type-aware matching) when supplied; otherwise fall back to the
-    # legacy single-root prefix logic.
+    # Apply exclusion rules. Two things changed here on 10 Jun 2026:
+    #
+    # 1. word_searches is NO LONGER a record-level filter. The scraper
+    #    already did relevance filtering (it brought back marks matching
+    #    individual words from the phrase, e.g. "AIRFIELD" / "FRIARS" /
+    #    "SOLUTIONS" rows for a "Friars Airfield Solutions" search). My
+    #    previous filter required the full phrase to match every mark,
+    #    which dropped nearly every record. word_searches still drives
+    #    scoring (via root_word in score_trademark) so editing the phrase
+    #    in the form still changes which records float to High Risk —
+    #    but no record gets excluded from the report.
+    # 2. The legacy `mark_in_scope_for_root` fallback only fires now when
+    #    word_searches is empty AND a non-default root was passed. This
+    #    preserves back-compat with older callers (e.g. legacy Step-5
+    #    scripts) without applying it on every modern commission.
     filtered = []
+    use_legacy_root_filter = (not word_searches) and root and root != 'STEALTH'
     for row_num, r in deduped:
         mark = cleanstr(r[5])
         classes = cleanstr(r[7])
-        if word_searches:
-            if not mark_matches_any(mark, word_searches):
-                continue
-        else:
-            if not mark_in_scope_for_root(mark, root):
-                continue
+        if use_legacy_root_filter and not mark_in_scope_for_root(mark, root):
+            continue
         if not touches_classes(classes, target_classes):
             continue
         filtered.append((row_num, r))
@@ -962,15 +1035,15 @@ def process_companies(rows: list, target_sic: str = '45320', root: str = 'STEALT
         seen.add(key)
         deduped.append(r)
     out = []
+    # word_searches no longer filters records (10 Jun 2026, see process_trademarks
+    # comment for the full rationale). SIC overlap remains the primary
+    # company-side relevance filter.
+    use_legacy_root_filter = (not word_searches) and root and root != 'STEALTH'
     for r in deduped:
         mark = cleanstr(r[1])
         sic = cleanstr(r[5]) if len(r) > 5 else ''
-        if word_searches:
-            if not mark_matches_any(mark, word_searches):
-                continue
-        else:
-            if not mark_in_scope_for_root(mark, root):
-                continue
+        if use_legacy_root_filter and not mark_in_scope_for_root(mark, root):
+            continue
         if not has_sic(sic, target_sic):
             continue
         out.append({
