@@ -401,10 +401,46 @@ def build_step5_report(*, order_meta: dict,
 
     # ---- Section 2 ----
     add_heading(doc, '2. Search Criteria', level=1)
+
+    # Word and domain search criteria are now multi-row (up to 5 of each)
+    # with one of four types (Exact Match / Starts With / Contains / Similar
+    # To) plus optional remarks. Pull from the structured lists if present,
+    # otherwise fall back to the back-compat single-value fields so reports
+    # generated before the multi-row update still render sensibly.
+    word_searches = order_meta.get('word_searches') or []
+    domain_searches = order_meta.get('domain_searches') or []
+
+    # Word searches table
     add_para(doc, 'Word Search', bold=True)
-    add_para(doc, f"Exact Match: {order_meta.get('exact','')}", space_after=2)
-    add_para(doc, f"Similar Match: {order_meta.get('similar','')}", space_after=2)
-    add_para(doc, 'Starts With: \u2014', space_after=8)
+    if word_searches:
+        w_body = [[w.get('type', ''), w.get('phrase', ''), w.get('remarks', '')]
+                  for w in word_searches]
+        add_table(doc, [1.5, 3.5, 2.0],
+                  ['Search Type', 'Phrase', 'Remarks'],
+                  w_body, font_size=10)
+    else:
+        # Back-compat path
+        if order_meta.get('exact'):
+            add_para(doc, f"Exact Match: {order_meta.get('exact','')}", space_after=2)
+        if order_meta.get('similar'):
+            add_para(doc, f"Starts With: {order_meta.get('similar','')}", space_after=2)
+        if not order_meta.get('exact') and not order_meta.get('similar'):
+            add_para(doc, 'No word search criteria captured.',
+                     italic=True, color=BRAND_LIGHT_SLATE, space_after=2)
+    add_para(doc, '', space_after=4)
+
+    # Domain searches table
+    add_para(doc, 'Domain Search', bold=True)
+    if domain_searches:
+        d_body = [[d.get('type', ''), d.get('phrase', ''), d.get('remarks', '')]
+                  for d in domain_searches]
+        add_table(doc, [1.5, 3.5, 2.0],
+                  ['Search Type', 'Phrase', 'Remarks'],
+                  d_body, font_size=10)
+    else:
+        add_para(doc, 'No domain search criteria captured.',
+                 italic=True, color=BRAND_LIGHT_SLATE, space_after=2)
+    add_para(doc, '', space_after=8)
 
     add_para(doc, 'Exclusion Rules Applied', bold=True)
     add_para(doc, 'Trademarks: marks where the search root is not the leading word were dropped (e.g. BAY STEALTH, SUPER STEALTH, SPOTLIGHT STEALTH). Records that did not touch any of the client\u2019s classes were dropped. Dead/ended records were retained but tagged Negligible Risk.', size=10)
