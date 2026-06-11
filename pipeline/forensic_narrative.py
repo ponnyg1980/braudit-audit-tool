@@ -352,6 +352,127 @@ def generate_per_record_commentary(client: NarrativeClient, *,
     return _robust_json_loads(raw)
 
 
+# ---------- Web-section commentary (BR-010, 11 Jun 2026) ------------------
+
+_EXTRAS_SECTION_BRIEFS = {
+    'google': (
+        'Google web hit. Comment on how the cited use of the mark relates '
+        'to the client\'s brand: is the cited site a competitor, a news '
+        'mention, a parking page, a defensive registration? Note the risk '
+        'grade returned by the scrape and whether it looks justified.'
+    ),
+    'companies': (
+        'UK Companies House registered company. Comment on whether the '
+        'cited company is an active commercial threat (filed accounts, '
+        'trading, SIC overlap with client) or a dormant / different-trade '
+        'entity. The data shown is verbatim from Companies House.'
+    ),
+    'domains': (
+        'Domain name registration. Comment on whether the cited domain '
+        'represents an active site, a defensive registration by an '
+        'unrelated party, or a speculative reservation. Note whether the '
+        'TLD pattern (.com / .co.uk / .net etc) suggests targeting.'
+    ),
+    'social': (
+        'Social media handle / page. Comment on whether the cited handle '
+        'is an active brand presence requiring action, or a dormant '
+        'reservation. Mention which platforms are populated.'
+    ),
+}
+
+
+def _build_extras_payload(section: str, row: dict, idx: int) -> dict:
+    """Pack one selected 3a–3d row into a small JSON-friendly dict that
+    the LLM can reason about. Drop bulky fields (image_bytes, raw HTML)
+    but keep risk/score/identifiers."""
+    pruned = {k: v for k, v in row.items()
+              if k not in ('image_bytes', 'raw_html', 'keyword_image_bytes')
+              and not isinstance(v, (bytes, bytearray))}
+    return {'extra_id': f'{section}_{idx}', **pruned}
+
+
+def generate_extras_commentary(client: NarrativeClient, *,
+                                extras_rows: dict,
+                                report_type: ReportType,
+                                client_brand: dict) -> dict:
+    """Single batched Sonnet call generates commentary for the operator-
+    selected rows across sections 3a (Google), 3b (Companies),
+    3c (Domains), 3d (Social).
+
+    `extras_rows` is the dict produced by the app's custom-selection UI:
+        {'google': [row, row, ...], 'companies': [...], 'domains': [...], 'social': [...]}
+
+    Returns a parallel dict where each row is augmented with a
+    'commentary' field:
+        {'google': [{'row': row, 'commentary': 'paragraph...'}, ...], ...}
+
+    Empty input sections produce empty output sections. Total cost
+    scales with the number of selected rows, not the number of original
+    results — operators control spend by selecting carefully.
+    """
+    # Build a flat payload across sections so we can do it in one call.
+    flat_payload: list[dict] = []
+    for section in ('google', 'companies', 'domains', 'social'):
+        rows = extras_rows.get(section) or []
+        for idx, row in enumerate(rows):
+            flat_payload.append({
+                'section': section,
+                'briefing': _EXTRAS_SECTION_BRIEFS[section],
+                **_build_extras_payload(section, row, idx),
+            })
+
+    out = {'google': [], 'companies': [], 'domains': [], 'social': []}
+    if not flat_payload:
+        return out
+
+    system = (
+        "You are Alex Pugh, Trademark Intelligence & Brand Protection Specialist "
+        "at Braudit. You are writing forensic commentary for a "
+        f"{'PRE-APPLICATION' if report_type == ReportType.PRE_APPLICATION else 'POST-REGISTRATION'} "
+        "trademark audit appendix.\n\n"
+        "The operator has hand-picked individual hits from the Google / "
+        "Companies House / Domains / Social Media scrapes for forensic "
+        "treatment. For each one, write a single short paragraph "
+        "(80-150 words) that explains what the hit means for the client.\n\n"
+        "Tone: professional, second-person, concrete. Cite the data from "
+        "the row directly rather than speculating. If the data is "
+        "ambiguous, say so honestly — don't invent commercial detail.\n\n"
+        "Output STRICT JSON. The shape is exactly:\n"
+        '{\n'
+        '  "google":    {"google_0": "paragraph", "google_1": "paragraph", ...},\n'
+        '  "companies": {"companies_0": "paragraph", ...},\n'
+        '  "domains":   {"domains_0": "paragraph", ...},\n'
+        '  "social":    {"social_0": "paragraph", ...}\n'
+        '}\n'
+        'Include keys only for sections that have entries. The keys must '
+        'match the extra_id values from the input.'
+    )
+
+    user = (
+        'CLIENT BRAND CONTEXT (the mark being protected):\n'
+        f'{json.dumps(client_brand, indent=2)}\n\n'
+        'SELECTED ROWS TO COMMENT ON:\n'
+        f'{json.dumps(flat_payload, indent=2)}\n\n'
+        'Return STRICT JSON only, per the schema above.'
+    )
+
+    raw = client._call(
+        system=system, user=user,
+        max_tokens=len(flat_payload) * DEFAULT_MAX_TOKENS_PER_RECORD + 600,
+    )
+    parsed = _robust_json_loads(raw)
+
+    # Stitch commentaries back onto rows in the original order.
+    for section in ('google', 'companies', 'domains', 'social'):
+        rows = extras_rows.get(section) or []
+        commentaries = (parsed.get(section) if isinstance(parsed, dict) else None) or {}
+        for idx, row in enumerate(rows):
+            extra_id = f'{section}_{idx}'
+            commentary = commentaries.get(extra_id, '')
+            out[section].append({'row': row, 'commentary': commentary})
+    return out
+
+
 # ---------- Executive summary + final recommendation ----------
 
 def _summary_system_prompt(report_type: ReportType) -> str:
@@ -448,6 +569,15 @@ class ForensicReport:
     summary: dict                   # exec_summary, final_recommendation, etc.
     client_brand: dict
     generation_meta: dict           # model used, token spend, timestamps
+    # BR-010 (11 Jun 2026) — operator-selected rows from sections 3a–3d
+    # get LLM commentary so they appear alongside the trademark cards in
+    # the appendix. Each top-level key is a section ('google', 'companies',
+    # 'domains', 'social'); each value is a list of {'row': dict,
+    # 'commentary': str} pairs. Empty by default — sections with no
+    # selection render nothing.
+    extras: dict = field(default_factory=lambda: {
+        'google': [], 'companies': [], 'domains': [], 'social': [],
+    })
 
     def to_dict(self) -> dict:
         return {
@@ -458,6 +588,7 @@ class ForensicReport:
             'summary': self.summary,
             'client_brand': self.client_brand,
             'generation_meta': self.generation_meta,
+            'extras': self.extras,
         }
 
 
@@ -497,10 +628,17 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
                        narrative_client: NarrativeClient,
                        client_classes: list[int],
                        client_mark: str,
-                       client_jurisdiction: str | list[str] = 'US') -> ForensicReport:
+                       client_jurisdiction: str | list[str] = 'US',
+                       extras_rows: dict | None = None) -> ForensicReport:
     """Top-level orchestrator. Scores all records, generates per-record
     commentary in one batched call, generates executive summary in one call,
     returns a ForensicReport ready for docx rendering.
+
+    `extras_rows` (BR-010, 11 Jun 2026) carries operator-selected rows from
+    sections 3a–3d (Google / Companies / Domains / Social). When supplied,
+    a separate batched LLM call generates a short commentary for each
+    selected row and the appendix grows new sections 6a–6d. Pass None or
+    an all-empty dict for the trademark-only default behaviour.
 
     If the executive summary fails (e.g. JSON parse error from a truncated
     LLM response), the audit still completes with a fallback summary so the
@@ -528,6 +666,27 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
             for i in range(len(signa_records))
         }
 
+    # BR-010: web-section commentary for operator-selected 3a-3d rows.
+    # Empty selection -> empty extras dict, zero LLM cost, no new sections.
+    extras = {'google': [], 'companies': [], 'domains': [], 'social': []}
+    if extras_rows and any(extras_rows.get(s) for s in ('google', 'companies', 'domains', 'social')):
+        try:
+            extras = generate_extras_commentary(
+                narrative_client,
+                extras_rows=extras_rows,
+                report_type=report_type,
+                client_brand=client_brand,
+            )
+        except Exception as exc:
+            # Failure-tolerant: render the rows verbatim with a placeholder.
+            extras = {
+                section: [
+                    {'row': row, 'commentary': f'[Commentary generation failed: {exc}]'}
+                    for row in (extras_rows.get(section) or [])
+                ]
+                for section in ('google', 'companies', 'domains', 'social')
+            }
+
     try:
         summary = generate_summary(
             narrative_client,
@@ -549,5 +708,8 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
             'completed_at': datetime.utcnow().isoformat() + 'Z',
             'model': narrative_client._model,
             'record_count': len(signa_records),
+            'extras_count': sum(len(extras.get(s, [])) for s in
+                                ('google', 'companies', 'domains', 'social')),
         },
+        extras=extras,
     )
