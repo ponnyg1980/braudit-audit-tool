@@ -252,6 +252,37 @@ class SignaClient:
         # Signa standard envelope: { "data": [...], "object": "list", ... }
         return body.get('data', []) if isinstance(body, dict) else []
 
+    def get_trademark_detail(self, signa_id: str) -> dict | None:
+        """Fetch the detail-tier representation of a single trademark.
+
+        BR-009 (Vienna code retrieval, 11 Jun 2026). The search/list
+        endpoint returns a slim record that doesn't include the
+        `design_codes` field. To get Vienna codes per cited mark we need
+        the full detail document — that's what this method returns.
+
+        Field `design_codes` on the response (when populated) is an array
+        of objects: `{code, category, division, section, depth, description}`.
+        Coverage is uneven by office: EUIPO / WIPO Madrid / European
+        national offices typically populated; USPTO uses its own
+        "Design Search Code" system and may return `[]` for figurative
+        marks even when the source register has equivalent data.
+
+        Returns the raw Signa record dict, or None on a 404 (record not
+        found / id invalid). Raises SignaError on other API errors so
+        the caller can decide whether to retry.
+        """
+        if not signa_id:
+            return None
+        try:
+            body = self._get(f'/trademarks/{signa_id}')
+        except SignaError as exc:
+            # 404 is normal for an invalid/stale id — let the caller fall
+            # back to the search-tier record. Other errors bubble up.
+            if '404' in str(exc):
+                return None
+            raise
+        return body if isinstance(body, dict) else None
+
     def lookup_by_app_number(self, *, app_number: str, office: str) -> dict | None:
         """Find a single trademark by application number scoped to one office.
 
