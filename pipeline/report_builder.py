@@ -582,61 +582,45 @@ def build_step5_report(*, order_meta: dict,
                 lines.append(str(n))
         return "\n".join(lines)
 
-    # 3e Trademarks Live
+    # 3e Trademarks Summary
+    # BR-IMG-005 (10 Jun 2026): 3e is the at-a-glance summary table — one
+    # row per cited mark with just the class NUMBERS (no UKIPO definitions).
+    # 3f below is the detailed click-to-collapse Heading-3 view. Live and
+    # Dead records are combined here, sorted by risk grade (Client Likely
+    # > High > Medium > Low > Negligible at bottom).
     doc.add_page_break()
-    add_heading(doc, '3e. Trademark Search Results \u2014 Live', level=1)
-    add_para(doc, 'Live trademark records (Registered and Pending) where the mark is in scope and the recital touches one or more of the client\u2019s classes. Class definitions are the UKIPO standardised Nice Classification headings. Sorted by initial-review score descending.', size=10)
+    add_heading(doc, '3e. Trademark Search Results — Summary', level=1)
+    add_para(doc, 'At-a-glance summary of every cited mark. Records are sorted by risk grade — Client Likely first, then High Risk, Medium, Low, Negligible (Dead) at the bottom. Scroll down to section 3f for the detail view per mark, including class definitions, goods/services and the embedded logo image.', size=10)
 
-    # Scoring legend so the operator and the client can interpret the Score
+    # Scoring legend so the operator and the client can interpret the Risk
     # column without having to read the methodology section. Thresholds are
     # mirrored from brand_tokens.RISK_THRESHOLDS, which mirrors filters.py.
     legend_rows = [[band, threshold] for band, threshold in RISK_THRESHOLDS]
-    add_para(doc, 'Scoring legend (score is out of 13):',
+    add_para(doc, 'Scoring legend (initial-review score is out of 13):',
              bold=True, color=BRAND_SLATE, size=10, space_after=2)
     add_table(doc, [1.5, 5.5],
               ['Risk Band', 'Score Range'],
               legend_rows, risk_col_index=0, font_size=10)
     add_para(doc, '', size=4, space_after=4)
 
-    # Shorten the "Stylized characters" Mark Type label so it fits in the Type
-    # column on one line. Other values ("Word", "Combined") already fit.
+    # Shorten the "Stylized characters" Mark Type label so it fits on one line.
     def _short_type(t):
         s = str(t or '').strip()
         if 'stylized' in s.lower():
             return 'Stylized'
         return s
 
-    # Column widths sum to 7.0". App # widened from 0.65 \u2192 0.95 so the full
-    # UK trademark number (e.g. UK00003076168) fits without wrapping.
-    # Recovered width comes from Class column (1.25 \u2192 1.10) and Owner
-    # (1.05 \u2192 0.95). Total: 0.4 + 0.95 + 0.95 + 0.55 + 1.10 + 0.50 + 0.95 + 0.95 + 0.65 = 7.00".
-    # For Combined reports, a "Threat" column is inserted before "Risk" so
-    # each (possibly duplicated) row shows whether it represents a Word or
-    # Logo threat. Widths shrunk proportionally to keep the 7.0" total.
-    if is_combined_report:
-        # 11 columns (10 prior + Visual sim, BR-IMG-002).
-        # Total: 0.40 + 0.85 + 0.75 + 0.50 + 0.85 + 0.45 + 0.70 + 0.70 + 0.50 + 0.55 + 0.75 = 7.00".
-        tm_widths  = [0.40,   0.85,    0.75,        0.50,    0.85,                       0.45,   0.70,    0.70,     0.50,     0.55,     0.75]
-        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Threat', 'Visual', 'Risk']
-    else:
-        tm_widths  = [0.40,   0.95,    0.95,        0.55,    1.10,                       0.50,   0.95,    0.95,     0.65]
-        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
+    # Class column for the summary table: numbers ONLY, no UKIPO definitions.
+    # User feedback (10 Jun 2026): the at-a-glance table is meant to be
+    # scannable — full definitions live in section 3f's detailed view.
+    def _class_numbers_only(classes_str: str) -> str:
+        if not classes_str:
+            return ''
+        # Already comma-separated like '9, 11, 35' — pass through unchanged.
+        return str(classes_str).strip()
 
-    # Office-aware hyperlink for the App # column (index 1 now)
-    # We pull the office from column 0 of the row so each link goes to the
-    # correct register (USPTO TSDR / UKIPO / EUIPO / WIPO).
-    def _app_link(row):
-        return tm_url(row[0], row[1])
-
-    def _img_cell(t):
-        # Render the mark image inline at ~0.6" wide; empty cell if no image.
-        return {'image_bytes': t.get('image_bytes'), 'width_in': 0.6}
-
-    # Visual-similarity cell (BR-IMG-002). Logo rows show either the CLIP
-    # cosine score (0.00–1.00) when CLIP was run, or a pHash distance
-    # marker when CLIP was skipped. Word rows and 'skipped' Logo rows
-    # show an em dash. The threshold rule that maps these numbers to a
-    # risk grade is documented in the methodology footer.
+    # Visual-similarity cell (BR-IMG-002). Logo rows show CLIP cosine or a
+    # pHash distance marker. Word rows show em dash.
     def _visual_cell(t):
         if t.get('threat_type') != 'Logo':
             return '—'
@@ -645,55 +629,78 @@ def build_step5_report(*, order_meta: dict,
             return f'{cos:.2f}'
         d = t.get('visual_phash_distance', -1)
         if d is not None and d >= 0:
-            # CLIP wasn't run for this row. d<=5 = near-duplicate pixels
-            # (auto-flagged identical), d>30 = visually unrelated.
-            prefix = '≈d' if d <= 5 else 'd'
+            prefix = 'd<=' if d <= 5 else 'd'
             return f'{prefix}{d}'
         return '—'
 
-    # Shared row-builder + risk-column index for both 3e (Live) and 3f
-    # (Dead) tables. Defined here so 3f can re-use it.
-    def _row(t):
+    def _img_cell(t):
+        return {'image_bytes': t.get('image_bytes'), 'width_in': 0.55}
+
+    def _app_link(row):
+        return tm_url(row[0], row[1])
+
+    # Summary-table column layout. Class column shrinks dramatically (just
+    # numbers) so other columns get more breathing room. Widths sum to 7.0".
+    if is_combined_report:
+        # 11 cols, total: 0.40+0.95+0.95+0.50+0.50+0.45+0.85+0.70+0.50+0.50+0.70 = 7.00
+        tm_widths  = [0.40,    0.95,    0.95,        0.50,    0.50,     0.45,   0.85,    0.70,     0.50,     0.50,     0.70]
+        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Classes','Type', 'Owner', 'Status', 'Threat', 'Visual', 'Risk']
+    else:
+        # 9 cols, total: 0.40+1.00+1.10+0.55+0.55+0.55+1.10+0.85+0.90 = 7.00
+        tm_widths  = [0.40,    1.00,    1.10,        0.55,    0.55,     0.55,   1.10,    0.85,     0.90]
+        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Classes','Type', 'Owner', 'Status', 'Risk']
+
+    def _summary_row(t):
         base = [t['office'], t['app'], t['mark'], _img_cell(t),
-                _class_cell(t['classes']), _short_type(t['type']),
+                _class_numbers_only(t['classes']), _short_type(t['type']),
                 t['owner'], t['status']]
         if is_combined_report:
             return base + [t.get('threat_type', 'Word'), _visual_cell(t), t['risk']]
         return base + [t['risk']]
-    # Risk column index shifts in combined-mode tables (Threat + Visual
-    # columns are inserted before Risk).
+
     risk_idx = 10 if is_combined_report else 8
 
-    # BR-IMG-004 (10 Jun 2026) — heading-per-mark renderer. Each cited
-    # mark is emitted as a Heading-3 summary line (always visible) followed
-    # by body paragraphs (hidden when the user clicks the H3 collapse
-    # triangle in Word). Replaces the wide 11-column table because Word
-    # tables don't support click-to-collapse rows in any version.
+    # Combine live + dead into one summary table; both are already sorted.
+    all_marks = list(trademarks_live) + list(trademarks_dead)
+    if all_marks:
+        body = [_summary_row(t) for t in all_marks]
+        add_table(doc, tm_widths, tm_headers, body,
+                  risk_col_index=risk_idx,
+                  hyperlink_col_indexes={1: _app_link},
+                  font_size=7)
+        # Combined-report-only visual signal legend.
+        if is_combined_report:
+            add_para(doc, '', size=4, space_after=2)
+            add_para(doc,
+                     'Visual column: CLIP cosine similarity (0.00-1.00) between the client logo and each cited mark logo, '
+                     'or pHash distance when CLIP was skipped (d<= near-duplicate, d>30 visually unrelated). '
+                     '>= 0.85 = visually identical (High if Live + same industry, else Medium). '
+                     '0.65-0.84 = mild similarity (Medium retained). '
+                     '< 0.65 = visually unrelated (demoted to Low).',
+                     italic=True, color=BRAND_LIGHT_SLATE, size=8, space_after=4)
+    else:
+        add_para(doc, 'No trademarks flagged.', italic=True, color=BRAND_LIGHT_SLATE)
+
+    # ---------------------------------------------------------------------
+    # 3f Trademark Detail — click-to-collapse Heading-3 blocks per cited mark.
+    # ---------------------------------------------------------------------
+    doc.add_page_break()
+    add_heading(doc, '3f. Trademark Search Results — Detail', level=1)
+    add_para(doc, 'Full detail per cited mark. Each entry below is collapsible in Word — click the triangle next to the heading line to fold or unfold its detail. The entries appear in the same risk-sorted order as section 3e above.', size=10)
+
     def _summary_visual(t: dict) -> str:
-        """Compact visual-signal label for the summary line. Empty when no
-        signal is computable (Word axis or skipped)."""
+        """Compact visual-signal label for the H3 line. Empty when no signal."""
         cos = t.get('visual_clip_cosine', -1.0)
         if cos is not None and cos >= 0:
             return f'cos {cos:.2f}'
         d = t.get('visual_phash_distance', -1)
         if d is not None and d >= 0:
-            prefix = 'd<=5' if d <= 5 else 'd'
+            prefix = 'd<=' if d <= 5 else 'd'
             return f'{prefix}{d}'
         return ''
 
     def _cited_mark_block(t: dict) -> None:
-        """Render one cited mark: Heading-3 summary + collapsible body.
-
-        Summary line (always visible):
-            Office App#  ·  Owner  ·  [Threat]  ·  Risk  ·  [Visual sim]
-        Body (collapsed when user clicks the H3 triangle):
-            mark text + embedded logo image
-            type / status / filing
-            classes with UKIPO definitions
-            goods/services
-            visual-similarity rationale
-            link to the official register
-        """
+        """One cited mark = Heading-3 summary line + collapsible body."""
         office = (t.get('office') or '').strip()
         app = (t.get('app') or '').strip()
         owner = (t.get('owner') or '').strip()
@@ -706,20 +713,16 @@ def build_step5_report(*, order_meta: dict,
             parts.append(threat)
         parts.append(risk)
         visual_str = _summary_visual(t)
-        # Only attach visual signal to Logo-axis rows — irrelevant on Word.
         if visual_str and (not threat or threat == 'Logo'):
             parts.append(visual_str)
         summary = '   |   '.join(parts)
 
-        # Heading 3 is the load-bearing piece — Word's click-to-collapse
-        # triangle only appears next to paragraphs in heading styles.
+        # Heading 3 paragraph (Word renders the click-to-collapse triangle).
         p = doc.add_paragraph(style='Heading 3')
         p.paragraph_format.space_before = Pt(4)
         p.paragraph_format.space_after = Pt(2)
         rh = p.add_run(summary)
-        rh.font.name = BRAND_FONT
-        rh.font.size = Pt(10)
-        rh.font.bold = True
+        rh.font.name = BRAND_FONT; rh.font.size = Pt(10); rh.font.bold = True
         rh.font.color.rgb = RGBColor.from_string(BRAND_NAVY)
 
         # ----- Body (collapses when user clicks the triangle) -----
@@ -742,12 +745,9 @@ def build_step5_report(*, order_meta: dict,
                 rb2.font.name = BRAND_FONT; rb2.font.size = Pt(10)
 
         meta_bits = []
-        if t.get('type'):
-            meta_bits.append(f'Type: {t["type"]}')
-        if t.get('status'):
-            meta_bits.append(f'Status: {t["status"]}')
-        if t.get('filing'):
-            meta_bits.append(f'Filing: {t["filing"]}')
+        if t.get('type'):   meta_bits.append(f'Type: {t["type"]}')
+        if t.get('status'): meta_bits.append(f'Status: {t["status"]}')
+        if t.get('filing'): meta_bits.append(f'Filing: {t["filing"]}')
         if meta_bits:
             p2 = doc.add_paragraph()
             p2.paragraph_format.space_after = Pt(2)
@@ -758,7 +758,7 @@ def build_step5_report(*, order_meta: dict,
 
         classes = (t.get('classes') or '').strip()
         if classes:
-            class_text = _class_cell(classes)
+            class_text = _class_cell(classes)  # FULL UKIPO defs here in the detail
             p3 = doc.add_paragraph()
             p3.paragraph_format.space_after = Pt(2)
             p3.paragraph_format.left_indent = Inches(0.25)
@@ -809,46 +809,11 @@ def build_step5_report(*, order_meta: dict,
             add_hyperlink(p6, url, url, color=BRAND_PINK,
                           underline=True, font_size=8)
 
-    # User tip + visual-signal legend, before the listing.
-    add_para(doc,
-             'Tip: each cited mark below is collapsible. Click the triangle next to the heading line in Word to fold / unfold the detail.',
-             italic=True, color=BRAND_SLATE, size=9, space_after=4)
-    if is_combined_report:
-        add_para(doc,
-                 'Visual signal in heading: cos X.XX = CLIP cosine similarity (0.00-1.00) between the client logo and this cited mark logo. '
-                 '>= 0.85 = visually identical (High if Live + same industry, otherwise Medium). '
-                 '0.65-0.84 = mild similarity (Medium retained). '
-                 '< 0.65 = visually unrelated (demoted to Low). '
-                 'd-markers (d<=5 / dN) appear when pHash was used instead of CLIP - d <= 5 = near-duplicate pixels; d > 30 = visually unrelated.',
-                 italic=True, color=BRAND_LIGHT_SLATE, size=8, space_after=8)
-
-    if trademarks_live:
-        for _cm in trademarks_live:
+    if all_marks:
+        for _cm in all_marks:
             _cited_mark_block(_cm)
-        # Keep the original "if is_combined_report:" footnote branch below
-        # as a no-op so the surrounding code structure stays intact. The
-        # legend has already been emitted above.
-        if False and is_combined_report:
-            add_para(doc, '', size=4, space_after=2)
-            add_para(doc,
-                     'Visual column: CLIP cosine similarity (0.00–1.00) between the client logo and each cited mark logo, or '
-                     'a perceptual-hash distance marker when CLIP was skipped. '
-                     '≥ 0.85 or ≈d≤5 = visually identical → High Risk if Live + same industry, otherwise Medium. '
-                     '0.65–0.84 = mild similarity (Medium cap retained). '
-                     '< 0.65 or d > 30 = visually unrelated → demoted to Low Risk. '
-                     '— = Word-axis row or no visual signal computable.',
-                     italic=True, color=BRAND_LIGHT_SLATE, size=8, space_after=4)
     else:
-        add_para(doc, 'No live trademarks flagged.', italic=True, color=BRAND_LIGHT_SLATE)
-
-    # 3f Trademarks Dead
-    doc.add_page_break()
-    add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
-    add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
-    if trademarks_dead:
-        # Heading-per-mark rendering (BR-IMG-004) — same as 3e Live.
-        for _cm in trademarks_dead:
-            _cited_mark_block(_cm)
+        add_para(doc, 'No trademarks flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
     # ---- Footer message ----
     doc.add_page_break()
