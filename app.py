@@ -630,15 +630,185 @@ if step5:
                  'Post-Registration: client already has a registered mark and wants to identify potential infringers.',
         )
     with f_c2:
-        # Default to top 10 by score to keep the cost predictable. Operators
-        # can dial up to all live records if they want full coverage.
+        # BR-010 (11 Jun 2026) — selection mode:
+        #   Default: top-N live trademarks by score (existing behaviour)
+        #   Custom : operator hand-picks rows from 3a / 3b / 3c / 3d / 3e / 3f
         live_count = len(step5['tm_live'])
+        dead_count = len(step5['tm_dead']) if step5.get('tm_dead') else 0
         default_top_n = min(10, live_count) if live_count else 1
-        top_n = st.number_input(
-            'Records to forensically audit',
-            min_value=1, max_value=max(1, live_count), value=default_top_n, step=1,
-            help='Top N live trademarks by score will be verified via Signa and forensically commented. '
-                 'Higher N → higher API cost. 10 is a sensible default.',
+        selection_mode = st.radio(
+            'Selection mode',
+            options=['Top N trademarks by risk (default)',
+                     'Custom selection across 3a–3f'],
+            index=0,
+            help='Default: forensically audits the top-N live trademarks by risk score. '
+                 'Custom: opens per-section selectors so you can hand-pick Google hits, '
+                 'Companies House records, domains, social handles, and trademarks.',
+        )
+        is_custom_mode = selection_mode.startswith('Custom')
+        if not is_custom_mode:
+            top_n = st.number_input(
+                'Records to forensically audit',
+                min_value=1, max_value=max(1, live_count), value=default_top_n, step=1,
+                help='Top N live trademarks by score will be verified via Signa '
+                     'and forensically commented. Higher N → higher API cost. '
+                     '10 is a sensible default.',
+            )
+        else:
+            top_n = 0  # ignored in custom mode
+
+    # ---------- Custom selection UI (BR-010) ----------
+    # Six per-section dataframes with multi-row selection. Defaults are empty;
+    # the operator ticks rows to include. Each section's selection is read
+    # back via st.session_state under a stable widget key.
+    custom_selection: dict = {'tm_3e': [], 'tm_3f': [],
+                              'google': [], 'companies': [],
+                              'domains': [], 'social': []}
+    if is_custom_mode:
+        st.markdown('**Pick rows from each section to include in the forensic audit.** '
+                    'Leaving a section empty means no entries from that section '
+                    'will be forensically analysed. The trademarks you pick from '
+                    '3e + 3f are verified against Signa / TemmyDB and get '
+                    'full per-record cards. Selections from 3a–3d get LLM-generated '
+                    'forensic commentary blocks in new appendix sections (6a–6d).')
+
+        # ----- 3a Google -----
+        with st.expander(f'3a Google — {len(step5.get("google") or [])} results',
+                         expanded=False):
+            google = step5.get('google') or []
+            if google:
+                df_g = [{'#': i + 1,
+                         'Keyword': (r.get('keyword') or r.get('mark_text') or '')[:60],
+                         'URL': (r.get('urls') or [r.get('link', '')])[0][:80],
+                         'Risk': r.get('risk', ''),
+                         'Score': r.get('score', '')}
+                        for i, r in enumerate(google)]
+                ev = st.dataframe(df_g, use_container_width=True, hide_index=True,
+                                  on_select='rerun', selection_mode='multi-row',
+                                  key='sel_3a_google')
+                custom_selection['google'] = list(getattr(ev, 'selection', {}).get('rows', []) or [])
+                st.caption(f'Selected: {len(custom_selection["google"])}')
+            else:
+                st.caption('_No Google results to choose from._')
+
+        # ----- 3b Companies -----
+        with st.expander(f'3b Companies House — {len(step5.get("companies") or [])} results',
+                         expanded=False):
+            companies = step5.get('companies') or []
+            if companies:
+                df_c = [{'#': i + 1,
+                         'Company': (r.get('company') or r.get('name') or r.get('mark_text') or '')[:60],
+                         'Status': r.get('status', ''),
+                         'Co. number': r.get('company_number') or r.get('co_no') or '',
+                         'SIC': r.get('sic', ''),
+                         'Risk': r.get('risk', ''),
+                         'Score': r.get('score', '')}
+                        for i, r in enumerate(companies)]
+                ev = st.dataframe(df_c, use_container_width=True, hide_index=True,
+                                  on_select='rerun', selection_mode='multi-row',
+                                  key='sel_3b_companies')
+                custom_selection['companies'] = list(getattr(ev, 'selection', {}).get('rows', []) or [])
+                st.caption(f'Selected: {len(custom_selection["companies"])}')
+            else:
+                st.caption('_No Companies House records to choose from._')
+
+        # ----- 3c Domains -----
+        with st.expander(f'3c Domains — {len(step5.get("domains") or [])} results',
+                         expanded=False):
+            domains = step5.get('domains') or []
+            if domains:
+                df_d = [{'#': i + 1,
+                         'Mark': (r.get('mark_text') or '')[:40],
+                         'Domain': ((r.get('urls') or [r.get('domain', '')])[0] if r.get('urls') or r.get('domain') else '')[:60],
+                         'Risk': r.get('risk', ''),
+                         'Score': r.get('score', '')}
+                        for i, r in enumerate(domains)]
+                ev = st.dataframe(df_d, use_container_width=True, hide_index=True,
+                                  on_select='rerun', selection_mode='multi-row',
+                                  key='sel_3c_domains')
+                custom_selection['domains'] = list(getattr(ev, 'selection', {}).get('rows', []) or [])
+                st.caption(f'Selected: {len(custom_selection["domains"])}')
+            else:
+                st.caption('_No domain records to choose from._')
+
+        # ----- 3d Social -----
+        with st.expander(f'3d Social media — {len(step5.get("social") or [])} results',
+                         expanded=False):
+            social = step5.get('social') or []
+            if social:
+                def _plats_str(r):
+                    p = r.get('platforms') or {}
+                    if isinstance(p, dict):
+                        return ', '.join(k for k, v in p.items() if v)
+                    return str(p)
+                df_s = [{'#': i + 1,
+                         'Mark': (r.get('mark_text') or '')[:40],
+                         'Platforms': _plats_str(r)[:60],
+                         'Risk': r.get('risk', ''),
+                         'Score': r.get('score', '')}
+                        for i, r in enumerate(social)]
+                ev = st.dataframe(df_s, use_container_width=True, hide_index=True,
+                                  on_select='rerun', selection_mode='multi-row',
+                                  key='sel_3d_social')
+                custom_selection['social'] = list(getattr(ev, 'selection', {}).get('rows', []) or [])
+                st.caption(f'Selected: {len(custom_selection["social"])}')
+            else:
+                st.caption('_No social media records to choose from._')
+
+        # ----- 3e Live trademarks -----
+        sorted_live_for_pick = sorted(step5['tm_live'],
+                                      key=lambda t: -int(t.get('score') or 0))
+        with st.expander(f'3e Live trademarks — {len(sorted_live_for_pick)} records '
+                         '(sorted by risk score, highest first)',
+                         expanded=True):
+            if sorted_live_for_pick:
+                df_e = [{'#': i + 1,
+                         'Office': r.get('office', ''),
+                         'App #': r.get('app', ''),
+                         'Mark': (r.get('mark') or '')[:35],
+                         'Owner': (r.get('owner') or '')[:35],
+                         'Classes': r.get('classes', ''),
+                         'Risk': r.get('risk', ''),
+                         'Score': r.get('score', '')}
+                        for i, r in enumerate(sorted_live_for_pick)]
+                ev = st.dataframe(df_e, use_container_width=True, hide_index=True,
+                                  on_select='rerun', selection_mode='multi-row',
+                                  key='sel_3e_trademarks')
+                custom_selection['tm_3e'] = list(getattr(ev, 'selection', {}).get('rows', []) or [])
+                st.caption(f'Selected: {len(custom_selection["tm_3e"])} of {len(sorted_live_for_pick)}')
+            else:
+                st.caption('_No live trademarks to choose from._')
+
+        # ----- 3f Dead trademarks -----
+        with st.expander(f'3f Dead trademarks (Negligible Risk) — {dead_count} records',
+                         expanded=False):
+            tm_dead_list = step5.get('tm_dead') or []
+            if tm_dead_list:
+                df_f = [{'#': i + 1,
+                         'Office': r.get('office', ''),
+                         'App #': r.get('app', ''),
+                         'Mark': (r.get('mark') or '')[:35],
+                         'Owner': (r.get('owner') or '')[:35],
+                         'Classes': r.get('classes', '')}
+                        for i, r in enumerate(tm_dead_list)]
+                ev = st.dataframe(df_f, use_container_width=True, hide_index=True,
+                                  on_select='rerun', selection_mode='multi-row',
+                                  key='sel_3f_trademarks')
+                custom_selection['tm_3f'] = list(getattr(ev, 'selection', {}).get('rows', []) or [])
+                st.caption(f'Selected: {len(custom_selection["tm_3f"])} of {len(tm_dead_list)}')
+            else:
+                st.caption('_No dead trademarks to choose from._')
+
+        # Summary line
+        total_selected = sum(len(v) for v in custom_selection.values())
+        st.info(
+            f'Total selection across all sections: **{total_selected}** records · '
+            f'TM 3e {len(custom_selection["tm_3e"])} · '
+            f'TM 3f {len(custom_selection["tm_3f"])} · '
+            f'Google {len(custom_selection["google"])} · '
+            f'Companies {len(custom_selection["companies"])} · '
+            f'Domains {len(custom_selection["domains"])} · '
+            f'Social {len(custom_selection["social"])}'
         )
 
     # Multi-select jurisdictions — default to whatever we parsed out
@@ -668,12 +838,38 @@ if step5:
 
     if forensic_clicked:
         try:
-            # Sort live records by score descending, take top N
+            # BR-010 (11 Jun 2026) — choose the verification target list:
+            #   Default mode: top-N live trademarks by score (existing).
+            #   Custom mode : operator-picked rows from 3e + 3f.
             sorted_live = sorted(
                 step5['tm_live'],
                 key=lambda t: -int(t.get('score') or 0),
             )
-            target_records = sorted_live[:int(top_n)]
+            tm_dead_list = step5.get('tm_dead') or []
+            extras_rows: dict = {'google': [], 'companies': [],
+                                  'domains': [], 'social': []}
+            if is_custom_mode:
+                # Combine 3e + 3f picks. The dataframe used the
+                # sorted_live order, so the indices map directly.
+                target_records = [sorted_live[i] for i in custom_selection['tm_3e']
+                                  if 0 <= i < len(sorted_live)]
+                target_records += [tm_dead_list[i] for i in custom_selection['tm_3f']
+                                   if 0 <= i < len(tm_dead_list)]
+                # Pull the row payloads for 3a-3d so they reach the
+                # narrative layer for forensic commentary.
+                google_list = step5.get('google') or []
+                companies_list = step5.get('companies') or []
+                domains_list = step5.get('domains') or []
+                social_list = step5.get('social') or []
+                extras_rows['google']    = [google_list[i]    for i in custom_selection['google']    if 0 <= i < len(google_list)]
+                extras_rows['companies'] = [companies_list[i] for i in custom_selection['companies'] if 0 <= i < len(companies_list)]
+                extras_rows['domains']   = [domains_list[i]   for i in custom_selection['domains']   if 0 <= i < len(domains_list)]
+                extras_rows['social']    = [social_list[i]    for i in custom_selection['social']    if 0 <= i < len(social_list)]
+                if not target_records and not any(extras_rows.values()):
+                    st.error('Custom mode selected but no rows were ticked in any section. Please select at least one row and try again.')
+                    raise RuntimeError('Empty custom selection')
+            else:
+                target_records = sorted_live[:int(top_n)]
 
             # Build clients
             signa_client = SignaClient(api_key=st.secrets['signa_api_key'])
@@ -747,6 +943,10 @@ if step5:
                     client_classes=client_classes,
                     client_mark=step5['exact'],
                     client_jurisdiction=client_jurisdictions,
+                    # BR-010 — pass selected 3a–3d rows; empty dict in
+                    # default mode means run_forensic_layer skips the
+                    # extras LLM call entirely.
+                    extras_rows=extras_rows,
                 )
 
             # --- Phase 3: render docx ---
