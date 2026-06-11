@@ -50,6 +50,10 @@ RISK_HIGH = 'F4B084'        # orange
 RISK_MEDIUM = 'FFE699'      # amber
 RISK_LOW = 'C5E0B4'         # green
 RISK_NEGLIGIBLE = 'D9D9D9'  # grey
+# 'Client Likely' is a category, not a severity — distinct teal-blue so it
+# reads as 'verify, not threaten' rather than competing with the red/orange
+# severity colours for attention. (BR-IMG-003, 10 Jun 2026.)
+RISK_CLIENT_LIKELY = '9CC3E5'  # light teal-blue
 
 
 # ---------- Typography -------------------------------------------------------
@@ -93,6 +97,7 @@ USABLE_PAGE_WIDTH_IN = 7.0
 # Mirrored here so the legend rendered in the report stays in sync with
 # the actual scoring logic — change one place, change both.
 RISK_THRESHOLDS = [
+    ('Client Likely', 'owner matches client name'),
     ('High Risk',   '≥ 11'),   # >= 11
     ('Medium Risk', '8 – 10'),
     ('Low Risk',    '≤ 7'),    # <= 7
