@@ -610,9 +610,10 @@ def build_step5_report(*, order_meta: dict,
     # each (possibly duplicated) row shows whether it represents a Word or
     # Logo threat. Widths shrunk proportionally to keep the 7.0" total.
     if is_combined_report:
-        # 10 columns. Total: 0.40 + 0.90 + 0.85 + 0.50 + 1.00 + 0.45 + 0.85 + 0.75 + 0.55 + 0.75 = 7.00".
-        tm_widths  = [0.40,   0.90,    0.85,        0.50,    1.00,                       0.45,   0.85,    0.75,     0.55,     0.75]
-        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Threat', 'Risk']
+        # 11 columns (10 prior + Visual sim, BR-IMG-002).
+        # Total: 0.40 + 0.85 + 0.75 + 0.50 + 0.85 + 0.45 + 0.70 + 0.70 + 0.50 + 0.55 + 0.75 = 7.00".
+        tm_widths  = [0.40,   0.85,    0.75,        0.50,    0.85,                       0.45,   0.70,    0.70,     0.50,     0.55,     0.75]
+        tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Threat', 'Visual', 'Risk']
     else:
         tm_widths  = [0.40,   0.95,    0.95,        0.55,    1.10,                       0.50,   0.95,    0.95,     0.65]
         tm_headers = ['Office','App #', 'Mark Text', 'Image', 'Class & UKIPO Definition', 'Type', 'Owner', 'Status', 'Risk']
@@ -627,6 +628,25 @@ def build_step5_report(*, order_meta: dict,
         # Render the mark image inline at ~0.6" wide; empty cell if no image.
         return {'image_bytes': t.get('image_bytes'), 'width_in': 0.6}
 
+    # Visual-similarity cell (BR-IMG-002). Logo rows show either the CLIP
+    # cosine score (0.00–1.00) when CLIP was run, or a pHash distance
+    # marker when CLIP was skipped. Word rows and 'skipped' Logo rows
+    # show an em dash. The threshold rule that maps these numbers to a
+    # risk grade is documented in the methodology footer.
+    def _visual_cell(t):
+        if t.get('threat_type') != 'Logo':
+            return '—'
+        cos = t.get('visual_clip_cosine', -1.0)
+        if cos is not None and cos >= 0:
+            return f'{cos:.2f}'
+        d = t.get('visual_phash_distance', -1)
+        if d is not None and d >= 0:
+            # CLIP wasn't run for this row. d<=5 = near-duplicate pixels
+            # (auto-flagged identical), d>30 = visually unrelated.
+            prefix = '≈d' if d <= 5 else 'd'
+            return f'{prefix}{d}'
+        return '—'
+
     # Shared row-builder + risk-column index for both 3e (Live) and 3f
     # (Dead) tables. Defined here so 3f can re-use it.
     def _row(t):
@@ -634,11 +654,11 @@ def build_step5_report(*, order_meta: dict,
                 _class_cell(t['classes']), _short_type(t['type']),
                 t['owner'], t['status']]
         if is_combined_report:
-            return base + [t.get('threat_type', 'Word'), t['risk']]
+            return base + [t.get('threat_type', 'Word'), _visual_cell(t), t['risk']]
         return base + [t['risk']]
-    # Risk column index shifts by +1 in combined-mode tables (Threat column
-    # is inserted before Risk).
-    risk_idx = 9 if is_combined_report else 8
+    # Risk column index shifts in combined-mode tables (Threat + Visual
+    # columns are inserted before Risk).
+    risk_idx = 10 if is_combined_report else 8
 
     if trademarks_live:
         tl_body = [_row(t) for t in trademarks_live]
@@ -646,6 +666,19 @@ def build_step5_report(*, order_meta: dict,
                   tl_body, risk_col_index=risk_idx,
                   hyperlink_col_indexes={1: _app_link},
                   font_size=7)
+        # Visual-column legend (Combined reports only — column is hidden in
+        # Word-only mode). Documents what the cosine / pHash markers mean
+        # so the operator can audit a row's risk grade.
+        if is_combined_report:
+            add_para(doc, '', size=4, space_after=2)
+            add_para(doc,
+                     'Visual column: CLIP cosine similarity (0.00–1.00) between the client logo and each cited mark logo, or '
+                     'a perceptual-hash distance marker when CLIP was skipped. '
+                     '≥ 0.85 or ≈d≤5 = visually identical → High Risk if Live + same industry, otherwise Medium. '
+                     '0.65–0.84 = mild similarity (Medium cap retained). '
+                     '< 0.65 or d > 30 = visually unrelated → demoted to Low Risk. '
+                     '— = Word-axis row or no visual signal computable.',
+                     italic=True, color=BRAND_LIGHT_SLATE, size=8, space_after=4)
     else:
         add_para(doc, 'No live trademarks flagged.', italic=True, color=BRAND_LIGHT_SLATE)
 
