@@ -429,6 +429,11 @@ if submitted:
                 # (~340 MB) which adds ~90 sec; subsequent audits reuse
                 # the cached weights and add ~10–15 sec per audit.
                 client_image_bytes=meta.get('image_1_bytes'),
+                # BR-IMG-003 (Phase 2.1): client name used to detect when
+                # the cited mark's owner is the client themselves — the
+                # row is tagged 'Client Likely' instead of being scored
+                # as a third-party threat.
+                client_name=client_name,
             )
             companies = process_companies(
                 sheets.get('Companies', [[]]),
