@@ -18,7 +18,7 @@ from .brand_tokens import (
     BRAND_PINK, BRAND_NAVY, BRAND_SLATE, BRAND_LIGHT_SLATE,
     BRAND_BODY, BRAND_WHITE, BRAND_BORDER, BRAND_FONT,
     BRAND_TAGLINE, LOGO_PATH_FULL, logo_exists,
-    RISK_VERY_HIGH, RISK_HIGH, RISK_MEDIUM, RISK_LOW, RISK_NEGLIGIBLE,
+    RISK_VERY_HIGH, RISK_HIGH, RISK_MEDIUM, RISK_LOW, RISK_NEGLIGIBLE, RISK_CLIENT_LIKELY,
     RISK_THRESHOLDS, USABLE_PAGE_WIDTH_IN,
 )
 
@@ -50,6 +50,10 @@ def risk_fill(risk):
     (red/orange/amber/green/grey) — not brand colours — so they stay stable
     across rebrands. Source of truth: brand_tokens.RISK_*."""
     r = (risk or '').lower()
+    # BR-IMG-003: 'Client Likely' is a non-severity category and must be
+    # checked BEFORE the substring-based severity checks so 'Client Likely'
+    # doesn't accidentally match the 'low' substring inside 'likely'.
+    if 'client likely' in r: return RISK_CLIENT_LIKELY
     if 'very high' in r: return RISK_VERY_HIGH
     if 'high' in r: return RISK_HIGH
     if 'medium' in r: return RISK_MEDIUM
