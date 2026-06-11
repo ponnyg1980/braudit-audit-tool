@@ -314,31 +314,13 @@ def _render_scoring_table(doc, report: ForensicReport):
 
 # ---------- 7. Trademark-by-Trademark Detail (cards) ----------
 
-def _render_record_cards(doc, report: ForensicReport, order_meta: dict | None = None):
+def _render_record_cards(doc, report: ForensicReport):
     _h1(doc, '6. Trademark-by-Trademark Detail')
     add_para(doc, (
         'Every cited record below, in the order shown in the scoring table. Each '
         'card contains verbatim Signa-verified data, followed by forensic '
         'commentary written for this audit\u2019s report type.'
     ), size=10)
-
-    # BR-009 Stage 1 — gather the client's Vienna codes from the Order Form
-    # so we can flag cited-mark Vienna codes that overlap with them
-    # (shown with a 🎯 marker on each card). Falls back to an empty set
-    # if order_meta is missing or doesn't carry Vienna data; the cards
-    # then just show the cited codes without overlap markers.
-    client_vienna_codes: set[str] = set()
-    if order_meta:
-        viennas = order_meta.get('vienna_classifications') or []
-        if isinstance(viennas, list):
-            for v in viennas:
-                if isinstance(v, dict):
-                    code = (v.get('code') or '').strip()
-                    if code:
-                        client_vienna_codes.add(code)
-                elif isinstance(v, str):
-                    if v.strip():
-                        client_vienna_codes.add(v.strip())
 
     pairs = sorted(
         enumerate(zip(report.records, report.scores)),
@@ -349,13 +331,12 @@ def _render_record_cards(doc, report: ForensicReport, order_meta: dict | None = 
         record_id = f'record_{original_idx}'
         _render_one_card(doc, record, score,
                          report.commentaries.get(record_id, ''),
-                         report.report_type,
-                         client_vienna_codes=client_vienna_codes)
+                         report.report_type)
         # Spacer paragraph between cards
         add_para(doc, '', size=4, space_after=4)
 
 
-def _render_one_card(doc, record, score, commentary: str, report_type: ReportType, *, client_vienna_codes: set[str] | None = None):
+def _render_one_card(doc, record, score, commentary: str, report_type: ReportType):
     # Card title (BR-IMG-004, 10 Jun 2026) — Heading 3 so Word's
     # click-to-collapse triangle appears next to each card. All body
     # paragraphs that follow (risk pill, KV table, goods, scoring
@@ -418,37 +399,6 @@ def _render_one_card(doc, record, score, commentary: str, report_type: ReportTyp
                  space_after=2)
         for gs in record.goods_services:
             add_para(doc, '  \u2022  ' + gs, size=10, space_after=2)
-
-    # Vienna classification design codes (BR-009 Stage 1, 11 Jun 2026).
-    # Only present for Figurative / Combined marks where Signa returned a
-    # populated design_codes array on the detail-tier response. Word marks
-    # always have []. Each cited code is shown alongside its description;
-    # codes that ALSO appear in the client\u2019s Order Form Vienna list get
-    # a target marker (\U0001F3AF) so the operator can immediately see
-    # visual-element overlap.
-    cited_viennas = getattr(record, 'vienna_codes', None) or []
-    if cited_viennas:
-        shared_codes_lower = {c for c in (client_vienna_codes or set())}
-        shared_n = sum(
-            1 for v in cited_viennas
-            if isinstance(v, dict) and (v.get('code') or '').strip() in shared_codes_lower
-        )
-        header_bits = ['Vienna Classification (cited mark):']
-        if shared_n:
-            header_bits.append(f'\U0001F3AF {shared_n} shared with client logo')
-        add_para(doc, '   \u00b7   '.join(header_bits),
-                 bold=True, size=10, space_after=2)
-        for v in cited_viennas:
-            if not isinstance(v, dict):
-                continue
-            code = (v.get('code') or '').strip()
-            if not code:
-                continue
-            desc = (v.get('description') or '').strip() or '\u2014'
-            shared = code in shared_codes_lower
-            marker = '\U0001F3AF  ' if shared else '       '
-            line = f'  {marker}{code}  \u00b7  {desc}'
-            add_para(doc, line, size=10, bold=shared, space_after=2)
 
     # Forensic score breakdown
     add_para(doc, 'Forensic Score Breakdown:', bold=True, size=10, space_after=2)
@@ -612,7 +562,7 @@ def build_forensic_appendix(report: ForensicReport, order_meta: dict) -> bytes:
     _render_risk_assessment(doc, report)
     _render_methodology(doc, report)
     _render_scoring_table(doc, report)
-    _render_record_cards(doc, report, order_meta)
+    _render_record_cards(doc, report)
     if report.report_type == ReportType.PRE_APPLICATION:
         _render_pre_recommended_spec(doc, report)
     else:
