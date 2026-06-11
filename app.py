@@ -422,6 +422,13 @@ if submitted:
                 word_searches=word_searches_input,
                 report_type=report_type,
                 client_vienna=meta.get('vienna_classes', ''),
+                # BR-IMG-002 (Phase 2): client logo for visual similarity.
+                # Triggers CLIP visual comparison against every cited mark
+                # logo on Combined / Image reports. On first-ever audit on
+                # a fresh Streamlit container the OpenCLIP model downloads
+                # (~340 MB) which adds ~90 sec; subsequent audits reuse
+                # the cached weights and add ~10–15 sec per audit.
+                client_image_bytes=meta.get('image_1_bytes'),
             )
             companies = process_companies(
                 sheets.get('Companies', [[]]),
