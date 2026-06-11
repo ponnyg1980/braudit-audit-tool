@@ -72,6 +72,77 @@ st.title('🔍 Braudit Audit Tool')
 st.caption('Steps 2–5 of the audit pipeline · de-duplicate, exclude, score, generate report.')
 st.divider()
 
+# ---------- BR-009 Vienna-code probe (spike, 11 Jun 2026) ----------
+# One-shot diagnostic that calls SignaClient.get_trademark_detail() against
+# a small set of EUIPO marks and shows the raw `design_codes` field. The
+# point is to confirm whether Signa actually populates Vienna codes for
+# EUIPO records (the Signa docs say yes; we want eyes on real data before
+# committing to the full BR-009 build that wires Vienna into the forensic
+# scoring rubric and report rendering). Tucked behind an expander so it
+# doesn't get in the way of normal audit work.
+with st.expander('🧪 Vienna probe — confirm Signa exposes design_codes (BR-009 spike)'):
+    st.caption(
+        'Fetches the detail-tier record for a Signa trademark ID and shows '
+        'the raw `design_codes` field. Use this to verify Vienna code '
+        'coverage on EUIPO / WIPO / other offices before we commit to '
+        'wiring Vienna into the forensic scoring rubric.'
+    )
+    if not st.secrets.get('signa_api_key', ''):
+        st.warning('Add `signa_api_key` to Streamlit Secrets to run the probe.')
+    else:
+        st.markdown(
+            '**Quick test — picks figurative EUIPO marks by free-text query:**'
+        )
+        probe_query = st.text_input(
+            'Search query (sent to EUIPO with mark_feature_type=figurative)',
+            value='lion',
+            help='Pick a brand or generic image-element word likely to return figurative marks.',
+            key='vienna_probe_q',
+        )
+        n_to_probe = st.slider(
+            'How many marks to probe', 1, 5, 3, key='vienna_probe_n',
+        )
+        if st.button('Run Vienna probe', key='vienna_probe_run'):
+            with st.spinner('Calling Signa…'):
+                signa = SignaClient(api_key=st.secrets['signa_api_key'])
+                try:
+                    candidates = signa.search(q=probe_query, offices='euipo',
+                                              limit=max(10, n_to_probe * 2))
+                except Exception as e:
+                    st.error(f'Search failed: {type(e).__name__}: {e}')
+                    candidates = []
+                # Prefer figurative / combined records, fall back to whatever we got
+                fig = [c for c in candidates
+                       if (c.get('mark_feature_type') or '').lower() in ('figurative', 'combined')]
+                picked = (fig or candidates)[:n_to_probe]
+                if not picked:
+                    st.warning('No candidates returned. Try a different query.')
+                for cand in picked:
+                    tm_id = cand.get('id', '')
+                    label = f"{cand.get('mark_text','(no text)')[:40]} · {cand.get('mark_feature_type','?')} · id={tm_id}"
+                    st.markdown(f'### {label}')
+                    try:
+                        detail = signa.get_trademark_detail(tm_id)
+                    except Exception as e:
+                        st.error(f'Detail fetch failed: {type(e).__name__}: {e}')
+                        continue
+                    if detail is None:
+                        st.warning('Detail returned None (404 or missing).')
+                        continue
+                    design_codes = detail.get('design_codes', None)
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.metric('design_codes count',
+                                  len(design_codes) if isinstance(design_codes, list) else 'missing')
+                        st.metric('mark_feature_type',
+                                  detail.get('mark_feature_type', '?'))
+                        st.metric('office_code', detail.get('office_code', '?'))
+                    with col2:
+                        st.markdown('**Raw design_codes:**')
+                        st.json(design_codes if design_codes is not None else {'(field missing)': True})
+
+st.divider()
+
 # Step 1: upload + auto-parse the Order Form so the form fields can pre-fill.
 # The uploader sits OUTSIDE the form so Streamlit reruns on file change.
 st.subheader('1. Upload scraped-results spreadsheet')
