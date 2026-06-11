@@ -664,16 +664,171 @@ def build_step5_report(*, order_meta: dict,
     # columns are inserted before Risk).
     risk_idx = 10 if is_combined_report else 8
 
+    # BR-IMG-004 (10 Jun 2026) — heading-per-mark renderer. Each cited
+    # mark is emitted as a Heading-3 summary line (always visible) followed
+    # by body paragraphs (hidden when the user clicks the H3 collapse
+    # triangle in Word). Replaces the wide 11-column table because Word
+    # tables don't support click-to-collapse rows in any version.
+    def _summary_visual(t: dict) -> str:
+        """Compact visual-signal label for the summary line. Empty when no
+        signal is computable (Word axis or skipped)."""
+        cos = t.get('visual_clip_cosine', -1.0)
+        if cos is not None and cos >= 0:
+            return f'cos {cos:.2f}'
+        d = t.get('visual_phash_distance', -1)
+        if d is not None and d >= 0:
+            prefix = 'd<=5' if d <= 5 else 'd'
+            return f'{prefix}{d}'
+        return ''
+
+    def _cited_mark_block(t: dict) -> None:
+        """Render one cited mark: Heading-3 summary + collapsible body.
+
+        Summary line (always visible):
+            Office App#  ·  Owner  ·  [Threat]  ·  Risk  ·  [Visual sim]
+        Body (collapsed when user clicks the H3 triangle):
+            mark text + embedded logo image
+            type / status / filing
+            classes with UKIPO definitions
+            goods/services
+            visual-similarity rationale
+            link to the official register
+        """
+        office = (t.get('office') or '').strip()
+        app = (t.get('app') or '').strip()
+        owner = (t.get('owner') or '').strip()
+        risk = (t.get('risk') or '').strip()
+        threat = t.get('threat_type', '') if is_combined_report else ''
+
+        office_app = f'{office} {app}' if office and app else (app or office or '-')
+        parts = [office_app, owner or '-']
+        if threat:
+            parts.append(threat)
+        parts.append(risk)
+        visual_str = _summary_visual(t)
+        # Only attach visual signal to Logo-axis rows — irrelevant on Word.
+        if visual_str and (not threat or threat == 'Logo'):
+            parts.append(visual_str)
+        summary = '   |   '.join(parts)
+
+        # Heading 3 is the load-bearing piece — Word's click-to-collapse
+        # triangle only appears next to paragraphs in heading styles.
+        p = doc.add_paragraph(style='Heading 3')
+        p.paragraph_format.space_before = Pt(4)
+        p.paragraph_format.space_after = Pt(2)
+        rh = p.add_run(summary)
+        rh.font.name = BRAND_FONT
+        rh.font.size = Pt(10)
+        rh.font.bold = True
+        rh.font.color.rgb = RGBColor.from_string(BRAND_NAVY)
+
+        # ----- Body (collapses when user clicks the triangle) -----
+        mark = (t.get('mark') or '').strip()
+        img = t.get('image_bytes')
+        if img or mark:
+            body = doc.add_paragraph()
+            body.paragraph_format.space_after = Pt(2)
+            body.paragraph_format.left_indent = Inches(0.25)
+            if img:
+                try:
+                    body.add_run().add_picture(BytesIO(img), width=Inches(0.7))
+                    body.add_run('   ')
+                except Exception:
+                    pass
+            if mark:
+                rb = body.add_run('Mark: ')
+                rb.font.bold = True; rb.font.name = BRAND_FONT; rb.font.size = Pt(10)
+                rb2 = body.add_run(mark)
+                rb2.font.name = BRAND_FONT; rb2.font.size = Pt(10)
+
+        meta_bits = []
+        if t.get('type'):
+            meta_bits.append(f'Type: {t["type"]}')
+        if t.get('status'):
+            meta_bits.append(f'Status: {t["status"]}')
+        if t.get('filing'):
+            meta_bits.append(f'Filing: {t["filing"]}')
+        if meta_bits:
+            p2 = doc.add_paragraph()
+            p2.paragraph_format.space_after = Pt(2)
+            p2.paragraph_format.left_indent = Inches(0.25)
+            r = p2.add_run('   |   '.join(meta_bits))
+            r.font.name = BRAND_FONT; r.font.size = Pt(9)
+            r.font.color.rgb = RGBColor.from_string(BRAND_BODY)
+
+        classes = (t.get('classes') or '').strip()
+        if classes:
+            class_text = _class_cell(classes)
+            p3 = doc.add_paragraph()
+            p3.paragraph_format.space_after = Pt(2)
+            p3.paragraph_format.left_indent = Inches(0.25)
+            r = p3.add_run('Classes: ')
+            r.font.bold = True; r.font.name = BRAND_FONT; r.font.size = Pt(9)
+            r2 = p3.add_run(class_text)
+            r2.font.name = BRAND_FONT; r2.font.size = Pt(9)
+
+        goods = (t.get('goods') or '').strip()
+        if goods:
+            if len(goods) > 350:
+                goods = goods[:350] + '...'
+            p4 = doc.add_paragraph()
+            p4.paragraph_format.space_after = Pt(2)
+            p4.paragraph_format.left_indent = Inches(0.25)
+            r = p4.add_run('Goods/Services: ')
+            r.font.bold = True; r.font.name = BRAND_FONT; r.font.size = Pt(9)
+            r2 = p4.add_run(goods)
+            r2.font.name = BRAND_FONT; r2.font.size = Pt(9)
+
+        decision = (t.get('visual_decision') or '').strip()
+        if decision and decision != 'skipped':
+            bits = []
+            cos = t.get('visual_clip_cosine', -1.0)
+            if cos is not None and cos >= 0:
+                bits.append(f'CLIP cosine {cos:.3f}')
+            ph = t.get('visual_phash_distance', -1)
+            if ph is not None and ph >= 0:
+                bits.append(f'pHash distance {ph}/64')
+            rationale = f'Visual similarity: {decision}'
+            if bits:
+                rationale += f' ({", ".join(bits)})'
+            p5 = doc.add_paragraph()
+            p5.paragraph_format.space_after = Pt(4)
+            p5.paragraph_format.left_indent = Inches(0.25)
+            r = p5.add_run(rationale)
+            r.font.italic = True; r.font.name = BRAND_FONT; r.font.size = Pt(8)
+            r.font.color.rgb = RGBColor.from_string(BRAND_LIGHT_SLATE)
+
+        url = tm_url(office, app)
+        if url:
+            p6 = doc.add_paragraph()
+            p6.paragraph_format.space_after = Pt(8)
+            p6.paragraph_format.left_indent = Inches(0.25)
+            r = p6.add_run('View on register: ')
+            r.font.name = BRAND_FONT; r.font.size = Pt(8)
+            r.font.color.rgb = RGBColor.from_string(BRAND_SLATE)
+            add_hyperlink(p6, url, url, color=BRAND_PINK,
+                          underline=True, font_size=8)
+
+    # User tip + visual-signal legend, before the listing.
+    add_para(doc,
+             'Tip: each cited mark below is collapsible. Click the triangle next to the heading line in Word to fold / unfold the detail.',
+             italic=True, color=BRAND_SLATE, size=9, space_after=4)
+    if is_combined_report:
+        add_para(doc,
+                 'Visual signal in heading: cos X.XX = CLIP cosine similarity (0.00-1.00) between the client logo and this cited mark logo. '
+                 '>= 0.85 = visually identical (High if Live + same industry, otherwise Medium). '
+                 '0.65-0.84 = mild similarity (Medium retained). '
+                 '< 0.65 = visually unrelated (demoted to Low). '
+                 'd-markers (d<=5 / dN) appear when pHash was used instead of CLIP - d <= 5 = near-duplicate pixels; d > 30 = visually unrelated.',
+                 italic=True, color=BRAND_LIGHT_SLATE, size=8, space_after=8)
+
     if trademarks_live:
-        tl_body = [_row(t) for t in trademarks_live]
-        add_table(doc, tm_widths, tm_headers,
-                  tl_body, risk_col_index=risk_idx,
-                  hyperlink_col_indexes={1: _app_link},
-                  font_size=7)
-        # Visual-column legend (Combined reports only — column is hidden in
-        # Word-only mode). Documents what the cosine / pHash markers mean
-        # so the operator can audit a row's risk grade.
-        if is_combined_report:
+        for _cm in trademarks_live:
+            _cited_mark_block(_cm)
+        # Keep the original "if is_combined_report:" footnote branch below
+        # as a no-op so the surrounding code structure stays intact. The
+        # legend has already been emitted above.
+        if False and is_combined_report:
             add_para(doc, '', size=4, space_after=2)
             add_para(doc,
                      'Visual column: CLIP cosine similarity (0.00–1.00) between the client logo and each cited mark logo, or '
@@ -691,11 +846,9 @@ def build_step5_report(*, order_meta: dict,
     add_heading(doc, '3f. Trademark Search Results \u2014 Dead (Negligible Risk)', level=1)
     add_para(doc, 'Trademark records with status \u201cEnded\u201d. These have no enforceable rights and would not, on their own, support an opposition or refusal. Retained for completeness and for audit of the search sweep.', size=10)
     if trademarks_dead:
-        td_body = [_row(t) for t in trademarks_dead]
-        add_table(doc, tm_widths, tm_headers,
-                  td_body, risk_col_index=risk_idx,
-                  hyperlink_col_indexes={1: _app_link},
-                  font_size=7)
+        # Heading-per-mark rendering (BR-IMG-004) — same as 3e Live.
+        for _cm in trademarks_dead:
+            _cited_mark_block(_cm)
 
     # ---- Footer message ----
     doc.add_page_break()
