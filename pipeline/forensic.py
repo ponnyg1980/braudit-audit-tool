@@ -17,7 +17,7 @@ term + office filter, then narrow to a single application number.
 """
 from __future__ import annotations
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Iterable
 import requests
 
@@ -147,6 +147,14 @@ class VerifiedRecord:
     # so any existing caller code that constructs VerifiedRecord without
     # this field keeps working.
     verification_source: str = 'signa'
+    # Vienna classification design codes (BR-009 Stage 1, 11 Jun 2026).
+    # Each entry: {'code': str, 'description': str, 'category': str,
+    # 'division': str, 'section': str, 'depth': int}. Populated only for
+    # Figurative / Combined cited marks where Signa returned them in the
+    # detail-tier response. Word marks always have []. Stays [] when the
+    # source register doesn't expose Vienna (e.g. USPTO records use Design
+    # Search Code, which Signa doesn't auto-translate yet).
+    vienna_codes: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -390,6 +398,44 @@ def _coerce_goods_services(rec: dict) -> list[str]:
     return out
 
 
+def _coerce_design_codes(rec: dict) -> list[dict]:
+    """Extract Vienna design codes from a Signa detail-tier response.
+
+    BR-009 Stage 1 (11 Jun 2026). Signa's `design_codes` field on the
+    detail response is `object[]`; each entry carries `code`,
+    `description`, and optional `category` / `division` / `section` /
+    `depth`. We normalise to {code, description} plus whichever
+    structural fields are present, defensively handling alternate
+    shapes that Signa might emit per office.
+
+    Returns [] for records that don't have design_codes populated,
+    which is the common case for USPTO + Word marks.
+    """
+    raw = rec.get('design_codes')
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if isinstance(entry, str):
+            # Some Signa-adjacent shapes emit bare code strings.
+            out.append({'code': entry, 'description': ''})
+            continue
+        if not isinstance(entry, dict):
+            continue
+        code = _safe_str(entry.get('code'))
+        if not code:
+            continue
+        out.append({
+            'code': code,
+            'description': _safe_str(entry.get('description')),
+            'category': _safe_str(entry.get('category')),
+            'division': _safe_str(entry.get('division')),
+            'section': _safe_str(entry.get('section')),
+            'depth': entry.get('depth'),
+        })
+    return out
+
+
 def _source_url_for(office: str, app_number: str) -> str:
     """Construct a direct link to the source register record.
 
@@ -485,6 +531,7 @@ def normalise_signa_record(rec: dict, *, fallback_office: str = '',
         verified=True,
         verification_note=verification_note,
         verification_source=verification_source,
+        vienna_codes=_coerce_design_codes(rec),
     )
 
 
@@ -515,6 +562,51 @@ def unverified_record(office: str, app_number: str, *, reason: str = '') -> Veri
 def _is_uk_office(office: str) -> bool:
     """True if the input office code resolves to the UK jurisdiction."""
     return _to_jurisdiction(office) == 'GB'
+
+
+def _is_figurative_or_combined(raw_record: dict) -> bool:
+    """Return True when a raw Signa/Temmy record describes a mark that
+    could carry Vienna design codes (Figurative or Combined).
+
+    Used by verify_records to decide whether the extra
+    `get_trademark_detail()` call is worth making. Pure Word marks
+    always return False — Signa returns `design_codes: []` for them.
+    """
+    if not isinstance(raw_record, dict):
+        return False
+    t = (raw_record.get('mark_feature_type') or '').strip().lower()
+    return ('figurative' in t) or ('combined' in t)
+
+
+def _enrich_with_design_codes(client: 'SignaClient', raw: dict) -> dict:
+    """Conditionally fetch the Signa detail-tier record for a Figurative
+    or Combined mark and merge its `design_codes` into the search-tier
+    record in place. Returns the (possibly enriched) dict.
+
+    Failure-tolerant: any error from get_trademark_detail returns the
+    record unchanged so the audit completes — Vienna is a recall
+    enhancement, not a correctness requirement. (BR-009 Stage 1.)
+    """
+    if not isinstance(raw, dict):
+        return raw
+    if not _is_figurative_or_combined(raw):
+        return raw
+    if raw.get('design_codes'):
+        # Already populated (e.g. caller passed a detail-tier record).
+        return raw
+    signa_id = _safe_str(raw.get('id'))
+    if not signa_id:
+        return raw
+    try:
+        detail = client.get_trademark_detail(signa_id)
+    except Exception:
+        return raw
+    if not isinstance(detail, dict):
+        return raw
+    design_codes = detail.get('design_codes')
+    if isinstance(design_codes, list):
+        raw['design_codes'] = design_codes
+    return raw
 
 
 def verify_records(client: SignaClient, records: list[dict],
@@ -637,6 +729,11 @@ def verify_records(client: SignaClient, records: list[dict],
             out.append(unverified_record(office, app_number,
                                          reason='No matching record returned by Signa.'))
             continue
+        # BR-009 Stage 1: enrich Figurative / Combined hits with Vienna codes
+        # from the detail-tier endpoint. Word marks skip this call (Vienna is
+        # always empty for them). Failure-tolerant — any enrichment error
+        # leaves the record as-is.
+        raw = _enrich_with_design_codes(client, raw)
         out.append(normalise_signa_record(raw, fallback_office=office,
                                           fallback_app_number=app_number))
     return out
