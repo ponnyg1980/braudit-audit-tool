@@ -337,17 +337,32 @@ def _render_record_cards(doc, report: ForensicReport):
 
 
 def _render_one_card(doc, record, score, commentary: str, report_type: ReportType):
-    # Card title — mark text + app number + register hyperlink
-    p = doc.add_paragraph()
+    # Card title (BR-IMG-004, 10 Jun 2026) — Heading 3 so Word's
+    # click-to-collapse triangle appears next to each card. All body
+    # paragraphs that follow (risk pill, KV table, goods, scoring
+    # breakdown, LLM commentary) collapse together when the user clicks.
+    # The always-visible summary line packs the identifiers an operator
+    # would scan: mark, app number, owner, status, risk + score.
+    p = doc.add_paragraph(style='Heading 3')
     p.paragraph_format.space_before = Pt(8)
     p.paragraph_format.space_after = Pt(2)
-    run(p, f'{record.mark_text or "(unknown mark)"}  \u2014  ',
-        bold=True, color=BRAND_NAVY, size=13)
-    label = f'{record.office} {record.app_number}'
+    pieces = [
+        record.mark_text or '(unknown mark)',
+        f'{record.office} {record.app_number}',
+        record.owner_name or '-',
+        (record.status or '-').title(),
+        f'{score.risk_band} ({score.total}/10)',
+    ]
+    summary = '   |   '.join(pieces)
+    rh = p.add_run(summary)
+    rh.font.name = BRAND_FONT
+    rh.font.size = Pt(11)
+    rh.font.bold = True
+    rh.font.color.rgb = RGBColor.from_string(BRAND_NAVY)
     if record.source_url:
-        add_hyperlink(p, record.source_url, label, font_size=11)
-    else:
-        run(p, label, size=11)
+        p.add_run('   ')
+        add_hyperlink(p, record.source_url, '[view on register]',
+                      color=BRAND_PINK, underline=True, font_size=9)
 
     # Risk pill
     pill = doc.add_paragraph()
