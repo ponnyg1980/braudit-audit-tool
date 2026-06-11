@@ -4,11 +4,13 @@ openpyxl>=3.1
 pandas>=2.2
 requests>=2.31
 anthropic>=0.40
-# BR-IMG-002 (Phase 2): visual similarity stack
---extra-index-url https://download.pytorch.org/whl/cpu
-torch>=2.2,<3.0
-torchvision>=0.17,<1.0
-open-clip-torch>=2.24
-imagehash>=4.3
-Pillow>=10.0
-# build-marker: v2.4.0-visual-similarity (forces full container rebuild after Phase 2 CLIP pipeline)
+# BR-IMG-002 Phase 2 dependencies (torch CPU + open-clip + imagehash) are
+# TEMPORARILY REMOVED while we fix the install. The visual_similarity
+# module fails-soft via try/except ImportError in process_trademarks —
+# the audit still runs, just without CLIP-driven Logo-axis adjustment.
+# Logo risk stays at Medium-cap (the safety net from this morning's fix).
+#
+# Re-introduction plan: package torch CPU via direct wheel URL OR move
+# the visual-similarity workload to a separate microservice OR swap
+# OpenCLIP for ONNX runtime. Tracked in Phase 2-bis.
+# build-marker: v2.5.0-revert-phase2-deps (forces full container rebuild)
