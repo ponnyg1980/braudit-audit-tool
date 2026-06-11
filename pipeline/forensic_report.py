@@ -426,6 +426,168 @@ def _render_one_card(doc, record, score, commentary: str, report_type: ReportTyp
                  italic=True, color=BRAND_LIGHT_SLATE, size=10)
 
 
+# ---------- 6a/6b/6c/6d. Web-section forensic commentary (BR-010) ----------
+
+# Friendly labels + scrape-source notes for each extras section. Used in
+# the Section 6a-6d headings and intro paragraphs so the reader has the
+# context the operator was looking at when they picked these rows.
+_EXTRAS_LABELS = {
+    'google': {
+        'heading': '6a. Selected Google Web Results',
+        'intro': ('Operator-selected hits from the Google web scrape '
+                  '(see Section 3a of the monitoring report). Each entry '
+                  'below received hand-picked forensic commentary.'),
+    },
+    'companies': {
+        'heading': '6b. Selected Companies House Filings',
+        'intro': ('Operator-selected UK Companies House registrations '
+                  '(see Section 3b of the monitoring report). Each entry '
+                  'below received hand-picked forensic commentary.'),
+    },
+    'domains': {
+        'heading': '6c. Selected Domain Registrations',
+        'intro': ('Operator-selected domain-name hits (see Section 3c of '
+                  'the monitoring report). Each entry below received '
+                  'hand-picked forensic commentary.'),
+    },
+    'social': {
+        'heading': '6d. Selected Social Media Handles',
+        'intro': ('Operator-selected social media presences (see '
+                  'Section 3d of the monitoring report). Each entry '
+                  'below received hand-picked forensic commentary.'),
+    },
+}
+
+
+def _extras_summary_line(section: str, row: dict) -> str:
+    """Build a one-line summary string for the H3 collapse heading of an
+    extras card. The shape varies by section because the scraped row
+    shapes do. Falls back to the row's str() form if no recognised
+    fields are present."""
+    if section == 'google':
+        keyword = (row.get('keyword') or row.get('mark_text') or '').strip()
+        urls = row.get('urls') or []
+        url0 = (urls[0] if urls else (row.get('link') or '')).strip()
+        risk = (row.get('risk') or '').strip()
+        bits = [s for s in [keyword or '(no keyword)', url0, risk] if s]
+        return '   |   '.join(bits)
+    if section == 'companies':
+        name = (row.get('company') or row.get('name') or row.get('mark_text') or '').strip()
+        status = (row.get('status') or '').strip()
+        co_no = (row.get('company_number') or row.get('co_no') or '').strip()
+        sic = (row.get('sic') or '').strip()
+        bits = [s for s in [name or '(no name)', status, co_no, sic] if s]
+        return '   |   '.join(bits)
+    if section == 'domains':
+        mark = (row.get('mark_text') or '').strip()
+        urls = row.get('urls') or []
+        url0 = (urls[0] if urls else (row.get('domain') or '')).strip()
+        risk = (row.get('risk') or '').strip()
+        bits = [s for s in [mark or url0 or '(no domain)', url0 if mark else '', risk] if s]
+        return '   |   '.join(bits)
+    if section == 'social':
+        mark = (row.get('mark_text') or '').strip()
+        plats = row.get('platforms') or {}
+        if isinstance(plats, dict):
+            active = [k for k, v in plats.items() if v]
+            plats_str = ', '.join(active) if active else '(no platforms)'
+        else:
+            plats_str = str(plats)
+        risk = (row.get('risk') or '').strip()
+        bits = [s for s in [mark or '(no mark)', plats_str, risk] if s]
+        return '   |   '.join(bits)
+    return str(row)[:120]
+
+
+def _render_extras_card(doc, section: str, item: dict, report_type: ReportType):
+    """One Heading-3 collapse block per selected 3a-3d row. Body shows
+    the verbatim row data (excluding bulky bytes) plus the LLM commentary."""
+    row = item.get('row') or {}
+    commentary = item.get('commentary') or ''
+
+    summary = _extras_summary_line(section, row)
+    p = doc.add_paragraph(style='Heading 3')
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after = Pt(2)
+    rh = p.add_run(summary)
+    rh.font.name = BRAND_FONT
+    rh.font.size = Pt(11)
+    rh.font.bold = True
+    rh.font.color.rgb = RGBColor.from_string(BRAND_NAVY)
+
+    # Verbatim row data — small KV table covering the interesting fields.
+    fields: list[list[str]] = []
+    if section == 'google':
+        urls = row.get('urls') or []
+        fields = [
+            ['Keyword', row.get('keyword') or row.get('mark_text') or '—'],
+            ['URL', urls[0] if urls else (row.get('link') or '—')],
+            ['Other URLs', ', '.join(urls[1:]) if len(urls) > 1 else '—'],
+            ['Risk grade', row.get('risk') or '—'],
+            ['Initial-review score', str(row.get('score') or '—')],
+        ]
+    elif section == 'companies':
+        fields = [
+            ['Company', row.get('company') or row.get('name') or row.get('mark_text') or '—'],
+            ['Company number', row.get('company_number') or row.get('co_no') or '—'],
+            ['Status', row.get('status') or '—'],
+            ['SIC code', row.get('sic') or '—'],
+            ['Risk grade', row.get('risk') or '—'],
+            ['Initial-review score', str(row.get('score') or '—')],
+        ]
+    elif section == 'domains':
+        urls = row.get('urls') or []
+        fields = [
+            ['Mark text', row.get('mark_text') or '—'],
+            ['Domain', urls[0] if urls else (row.get('domain') or '—')],
+            ['Other domains', ', '.join(urls[1:]) if len(urls) > 1 else '—'],
+            ['Risk grade', row.get('risk') or '—'],
+            ['Initial-review score', str(row.get('score') or '—')],
+        ]
+    elif section == 'social':
+        plats = row.get('platforms') or {}
+        if isinstance(plats, dict):
+            active = ', '.join(f'{k}: {v}' for k, v in plats.items() if v) or '—'
+        else:
+            active = str(plats)
+        fields = [
+            ['Mark text', row.get('mark_text') or '—'],
+            ['Platforms', active],
+            ['Risk grade', row.get('risk') or '—'],
+            ['Initial-review score', str(row.get('score') or '—')],
+        ]
+    if fields:
+        _make_kv_table(doc, fields, key_width=1.8, val_width=5.2)
+
+    # Forensic commentary block.
+    add_para(doc, 'Forensic Commentary:', bold=True, size=10, space_after=2,
+             color=BRAND_NAVY)
+    if commentary:
+        for para in commentary.split('\n\n'):
+            if para.strip():
+                add_para(doc, para.strip(), size=10)
+    else:
+        add_para(doc, '[Commentary unavailable for this row.]',
+                 italic=True, color=BRAND_LIGHT_SLATE, size=10)
+
+
+def _render_extras_sections(doc, report: ForensicReport):
+    """Render 6a/6b/6c/6d. Each section is conditional — skip if the
+    operator didn't pick anything from that source. Order matches the
+    monitoring report (3a→3d)."""
+    extras = getattr(report, 'extras', None) or {}
+    for section in ('google', 'companies', 'domains', 'social'):
+        items = extras.get(section) or []
+        if not items:
+            continue
+        meta = _EXTRAS_LABELS[section]
+        _h1(doc, meta['heading'])
+        add_para(doc, meta['intro'], size=10)
+        for item in items:
+            _render_extras_card(doc, section, item, report.report_type)
+            add_para(doc, '', size=4, space_after=4)
+
+
 # ---------- 8. Recommended Specification (Pre) / Recommended Actions (Post) ----------
 
 def _render_pre_recommended_spec(doc, report: ForensicReport):
@@ -563,6 +725,11 @@ def build_forensic_appendix(report: ForensicReport, order_meta: dict) -> bytes:
     _render_methodology(doc, report)
     _render_scoring_table(doc, report)
     _render_record_cards(doc, report)
+    # BR-010 (11 Jun 2026): selectable forensic analysis of 3a-3d web hits.
+    # Renders 6a-6d sections only when the operator picked rows from
+    # those scrapes — otherwise the appendix flows trademark-cards
+    # straight to Recommended Spec / Actions, identical to before.
+    _render_extras_sections(doc, report)
     if report.report_type == ReportType.PRE_APPLICATION:
         _render_pre_recommended_spec(doc, report)
     else:
