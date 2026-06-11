@@ -159,6 +159,69 @@ def has_sic(sic_str: str, target_sic: str) -> bool:
     return target_sic in str(sic_str)
 
 
+# Legal-entity suffixes stripped before client-name vs owner-name comparison.
+# Captures most common UK/US/EU corporate forms. The list is uppercase so
+# the caller normalises both sides before checking.
+_ENTITY_SUFFIXES = {
+    'LIMITED', 'LTD', 'PLC',
+    'LLP', 'LLC', 'INC', 'CORP', 'CORPORATION',
+    'GMBH', 'AG', 'SA', 'SAS', 'BV', 'NV', 'AB', 'OY',
+    'CO', 'COMPANY', 'GROUP', 'HOLDINGS', 'INTERNATIONAL',
+}
+
+
+def _strip_entity_suffixes(name: str) -> str:
+    """Strip trailing corporate/legal-entity suffixes from a company name.
+
+    'Friars Airfield Solutions Limited' -> 'FRIARS AIRFIELD SOLUTIONS'
+    'Acme Corp. Inc.'                    -> 'ACME'
+
+    Used as a normalisation step before comparing the cited mark's owner
+    to the client name — the suffix tail varies (Ltd vs Limited vs plc)
+    while the brand-name body is what actually identifies the entity.
+    """
+    if not name:
+        return ''
+    tokens = str(name).upper().replace('.', ' ').replace(',', ' ').split()
+    while tokens and tokens[-1] in _ENTITY_SUFFIXES:
+        tokens.pop()
+    return ' '.join(tokens)
+
+
+def is_likely_client_owner(client_name: str, owner: str) -> bool:
+    """Return True when the cited mark's owner name plausibly identifies
+    the client themselves (rather than a third party).
+
+    Detection rule (BR-IMG-003, 10 Jun 2026):
+      1. Normalise both sides — upper-case + strip legal entity suffixes
+         (Limited/Ltd/plc/LLP/LLC/Inc/Corp/Holdings/Group/Co/etc).
+      2. Exact match after normalisation -> True.
+      3. Fuzzy Jaro-style ratio >= 0.85 over the normalised strings -> True.
+
+    A simple, intentionally narrow detector. The risk of over-flagging
+    (a real third-party threat hidden behind a 'Client Likely' label) is
+    worse than under-flagging (operator just sees a normal risk row).
+
+    Edge case — 'Bamboo Connect' vs 'Bamboo Connections' fuzzy-matches at
+    ≈ 0.88 because the strings share a long prefix; the operator can
+    spot the difference at a glance and adjust. Documented trade-off:
+    we accept this false positive in exchange for catching real cases
+    where the client's own mark name varies slightly from the form input
+    (typos, abbreviations, regional suffixes).
+    """
+    if not client_name or not owner:
+        return False
+    cn = _strip_entity_suffixes(client_name)
+    on = _strip_entity_suffixes(owner)
+    if not cn or not on:
+        return False
+    if cn == on:
+        return True
+    if _fuzzy_ratio(cn, on) >= 0.85:
+        return True
+    return False
+
+
 def is_figurative_type(mark_type: str) -> bool:
     """True when a trademark's Type column denotes a mark with a visual
     element — Figurative, Combined (word + image), Stylised — and therefore
@@ -910,7 +973,8 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
                        word_searches: list[dict] | None = None,
                        report_type: str = 'word_only',
                        client_vienna: str = '',
-                       client_image_bytes: bytes | None = None) -> list[dict]:
+                       client_image_bytes: bytes | None = None,
+                       client_name: str = '') -> list[dict]:
     """Steps 2-4 on the Trademarks sheet.
 
     `images` is an optional {row_number: jpeg_bytes} map from
@@ -1074,6 +1138,20 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             # else: stay Negligible (unchanged)
         # 'similar' or 'skipped': keep the Medium-capped base score.
 
+        # ----- BR-IMG-003: Client Likely override (10 Jun 2026) -----------
+        # If the cited mark's OWNER fuzzy-matches the client's company
+        # name, this is almost certainly the client's own registered mark
+        # appearing in the search results. Override BOTH axes' risk grade
+        # to the 'Client Likely' tag so the operator can verify it's
+        # really them rather than confusing it with a real third-party
+        # threat. The row is still emitted (the user explicitly wants
+        # visibility, not exclusion) — it just gets a distinct tag that
+        # sorts to the top of the table and is coloured differently.
+        client_likely = is_likely_client_owner(client_name, cleanstr(r[8]))
+        if client_likely:
+            word_risk = 'Client Likely'
+            image_risk = 'Client Likely'
+
         base_record = {
             'office': cleanstr(r[0]),
             'app': cleanstr(r[1]),
@@ -1097,6 +1175,9 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             'visual_decision': v_decision,
             'visual_phash_distance': v_phash,
             'visual_clip_cosine': v_cosine,
+            # BR-IMG-003: per-record flag so the report builder can apply
+            # the Client-Likely cell colour without re-running the match.
+            'client_likely': client_likely,
         }
 
         def _emit(record_axis: str, score: int, risk: str):
@@ -1162,7 +1243,16 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
 
     # Sort: live (non-Negligible) first by score desc, then by mark text.
     # Ties between Word and Logo duplicates keep their natural order.
-    scored.sort(key=lambda x: (0 if x['risk'] != 'Negligible' else 1, -x['score'], x['mark'], x.get('threat_type', '')))
+    # Sort: Client Likely first (operator sees their own mark up top to
+    # verify), then live rows by score desc, Negligible last.
+    def _risk_sort_key(risk: str) -> int:
+        if risk == 'Client Likely':
+            return 0
+        if risk == 'Negligible':
+            return 2
+        return 1
+    scored.sort(key=lambda x: (_risk_sort_key(x['risk']), -x['score'],
+                                x['mark'], x.get('threat_type', '')))
     return scored
 
 
