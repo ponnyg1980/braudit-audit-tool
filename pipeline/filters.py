@@ -909,7 +909,8 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
                        images: dict[int, bytes] | None = None,
                        word_searches: list[dict] | None = None,
                        report_type: str = 'word_only',
-                       client_vienna: str = '') -> list[dict]:
+                       client_vienna: str = '',
+                       client_image_bytes: bytes | None = None) -> list[dict]:
     """Steps 2-4 on the Trademarks sheet.
 
     `images` is an optional {row_number: jpeg_bytes} map from
@@ -980,6 +981,50 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             continue
         filtered.append((row_num, r))
 
+    # NOTE: BR-IMG-001 (logo OCR for Word-axis recall) was investigated and
+    # withdrawn on 10 Jun 2026 — the existing scrapers already extract mark
+    # text into the spreadsheet's mark column for all our test templates
+    # (Friars, Nicholson, Bamboo), so OCR-on-cited-marks added ~55 sec of
+    # audit overhead for 0 measurable Word recoveries. The logo_ocr.py
+    # module is kept on disk for future use (client-logo pre-flight check,
+    # Google-image-result OCR) but is NOT wired into this scoring path.
+
+    # ---------- BR-IMG-002: Visual similarity (Phase 2, 10 Jun 2026) ------
+    # Compute a single batch of visual-similarity decisions for the
+    # client logo vs every cited mark logo. Used downstream in the scoring
+    # loop to selectively un-cap the Logo-axis risk grade (which is
+    # otherwise capped at Medium without any visual signal).
+    #
+    # Rule (per Jonathan, 10 Jun 2026):
+    #   decision='identical' + Live  + class overlap → High Risk
+    #   decision='identical' + Live  + no class overlap → Medium Risk
+    #   decision='identical' + Ended (Dead) → Medium Risk (upgrade)
+    #   decision='similar'  → keep base (Medium-capped) score
+    #   decision='weak' or 'unrelated' (CLIP definitively different) → Low Risk
+    #   decision='skipped' (model unavailable, image decode failed) → keep base
+    #
+    # Visual similarity is only computed for Combined / Image reports
+    # where the operator supplied a client image. Word-only reports do
+    # NOT load the model — saves ~340 MB resident memory and ~30 sec
+    # audit time when visual signal isn't needed.
+    visual_decisions: dict[int, dict] = {}
+    if client_image_bytes and images and report_type in ('logo', 'combined'):
+        try:
+            from .visual_similarity import score_visual_similarity_batch
+            cited_for_visual = {row_num: images[row_num]
+                                for row_num, _ in filtered
+                                if images.get(row_num)}
+            if cited_for_visual:
+                visual_decisions = score_visual_similarity_batch(
+                    client_image_bytes, cited_for_visual,
+                    auto_unload=True,
+                )
+        except Exception:
+            # visual_similarity module unavailable (e.g. open_clip not
+            # installed in this environment). Skip the visual layer —
+            # audit continues with base Logo-axis scoring + Medium cap.
+            visual_decisions = {}
+
     # Score every record on BOTH axes (word + image). Single-axis reports
     # pick one; combined reports emit one or two rows per record per the
     # duplication rule.
@@ -990,6 +1035,44 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
         image_score = score_trademark_image(r, target_classes, client_vienna)
         word_risk = risk_from_score(word_score, status_str)
         image_risk = risk_from_score(image_score, status_str)
+
+        # ----- BR-IMG-002: cap Logo-axis at Medium without visual signal --
+        # Without CLIP, the base score happily hits High Risk on any
+        # Registered Figurative mark with 3-class overlap — a known false
+        # positive. Cap to Medium here; the visual layer below may
+        # un-cap back to High when CLIP confirms genuine similarity.
+        if image_risk == 'High Risk':
+            image_risk = 'Medium Risk'
+
+        # ----- Apply visual-similarity decision when available -----------
+        v = visual_decisions.get(row_num) or {}
+        v_decision = v.get('decision', 'skipped')
+        v_cosine = v.get('clip_cosine', -1.0)
+        v_phash = v.get('phash_distance', -1)
+
+        # Class overlap is needed for the "identical + Live + same
+        # industry → High" branch of Jonathan's rule.
+        cls_parts = [int(p) for p in re.split(r'[,\s]+', cleanstr(r[7]))
+                     if p.strip().isdigit()]
+        class_overlap_n = sum(1 for n in cls_parts if n in target_classes)
+        status_l = status_str.lower()
+
+        if v_decision == 'identical':
+            # Strong visual signal — apply Jonathan's rule.
+            if status_l in ('registered', 'pending'):
+                image_risk = 'High Risk' if class_overlap_n > 0 else 'Medium Risk'
+            elif status_l == 'ended':
+                # Upgrade a Dead cited mark from Negligible to Medium
+                # because the logo is identical. Recovers it from the
+                # 3f Dead table back into the live 3e Logo table.
+                image_risk = 'Medium Risk'
+            # else (rare unknown status): leave base
+        elif v_decision in ('weak', 'unrelated'):
+            # CLIP definitively says different — demote.
+            if status_l != 'ended':
+                image_risk = 'Low Risk'
+            # else: stay Negligible (unchanged)
+        # 'similar' or 'skipped': keep the Medium-capped base score.
 
         base_record = {
             'office': cleanstr(r[0]),
@@ -1008,6 +1091,12 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
             # side by side when useful, even in single-axis reports.
             'word_score': word_score, 'word_risk': word_risk,
             'image_score': image_score, 'image_risk': image_risk,
+            # Visual similarity fields (BR-IMG-002). 'visual_decision' is
+            # the rule input; the numeric fields back it up so the report
+            # builder can render a per-row 'why this grade' explanation.
+            'visual_decision': v_decision,
+            'visual_phash_distance': v_phash,
+            'visual_clip_cosine': v_cosine,
         }
 
         def _emit(record_axis: str, score: int, risk: str):
