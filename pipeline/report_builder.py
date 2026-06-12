@@ -297,8 +297,17 @@ def build_step5_report(*, order_meta: dict,
     else:
         mark_type_label = 'Word Mark Report'
 
+    # BR-011 (11 Jun 2026): Monitoring vs Audit deliverable. Detected from
+    # Order Form A2 by filters.extract_order_metadata. Audit = initial
+    # clearance / search; Monitoring = scheduled surveillance. Title and
+    # Section 1 wording branch on this flag. Defaults to audit so legacy
+    # spreadsheets (no document_type key) render the original framing.
+    is_monitoring = (order_meta.get('document_type') or 'audit').lower() == 'monitoring'
+    deliverable_label = ('Monitoring or Representation Report'
+                         if is_monitoring else 'Search & Audit Report')
+
     add_para(doc, order_meta.get('client_name', ''), bold=True, color=BRAND_NAVY, size=16, space_after=2)
-    add_para(doc, f'Monitoring or Representation Report — {mark_type_label}',
+    add_para(doc, f'{deliverable_label} — {mark_type_label}',
              bold=True, color=BRAND_NAVY, size=18, space_after=10)
 
     # For Image Mark and Combined reports: embed the logo/figurative image
@@ -414,7 +423,40 @@ def build_step5_report(*, order_meta: dict,
 
     # ---- Section 1 ----
     add_heading(doc, '1. Report Overview', level=1)
-    add_para(doc, 'This report provides a monitoring update based on searches carried out in the last 30 days. It compiles findings from multiple sources, including search engines, company registries, domain name databases, social media platforms, and trademark registries. The purpose is to identify any existing use of the name or logo, potential infringements, or similar trademarks that could conflict with the client\u2019s branding.', size=11)
+    if is_monitoring:
+        # BR-011 monitoring narrative \u2014 counts new results from the latest
+        # scrape window and frames the report as scheduled surveillance.
+        # The data has already been date-filtered upstream (see
+        # filters.filter_to_latest_search_date) so the counts reflect
+        # only rows from the most recent scrape period.
+        latest_date = (order_meta.get('latest_search_date') or '').strip()
+        new_count_total = (
+            raw_counts.get('tm_live_raw', 0) + raw_counts.get('tm_dead_raw', 0)
+            + raw_counts.get('google_raw', 0) + raw_counts.get('companies_raw', 0)
+            + raw_counts.get('domains_raw', 0) + raw_counts.get('social_raw', 0)
+        )
+        client = order_meta.get('client_name', '').strip() or 'you'
+        period_clause = (f' as of {latest_date}' if latest_date else '')
+        add_para(doc,
+                 f'This is your scheduled monitoring report for {client}. '
+                 f'During this monitoring period{period_clause}, we identified '
+                 f'{new_count_total} new results across all monitored sources: '
+                 f'trademark registers, Google search, Companies House (UK), '
+                 f'domain registrations, and social media.',
+                 size=11)
+        add_para(doc,
+                 'Our team has reviewed these results and flagged the records '
+                 'we believe require your attention. We invite you to review '
+                 'the flagged items in the sections below.',
+                 size=11)
+        add_para(doc,
+                 'If you would like to investigate any of these further, '
+                 'please get in touch and we can advise on the appropriate '
+                 'next step.',
+                 size=11, italic=True, color=BRAND_SLATE)
+    else:
+        # Existing audit narrative \u2014 initial clearance / search context.
+        add_para(doc, 'This report provides an audit based on searches carried out across multiple sources, including search engines, company registries, domain name databases, social media platforms, and trademark registries. The purpose is to identify any existing use of the name or logo, potential infringements, or similar trademarks that could conflict with the client\u2019s branding.', size=11)
     add_para(doc, 'This report is for guidance only and does not replace expert trademark advice or professional legal advice.', size=11)
 
     add_heading(doc, 'Results Overview', level=2)
