@@ -454,6 +454,56 @@ def build_step5_report(*, order_meta: dict,
                  'please get in touch and we can advise on the appropriate '
                  'next step.',
                  size=11, italic=True, color=BRAND_SLATE)
+
+        # BR-011 Stage 2 (12 Jun 2026) — Monitoring assessment subsection.
+        # When app.py has populated `order_meta['monitoring_assessment']`
+        # with an LLM-generated verdict + flagged records, render them as
+        # a "What we believe requires your attention" block here. This
+        # delivers on the promise made in the monitoring intro above —
+        # without it the intro is hollow (the Woodcross report case that
+        # surfaced this gap, 12 Jun 2026).
+        assessment = order_meta.get('monitoring_assessment') or {}
+        verdict = (assessment.get('verdict_paragraph') or '').strip()
+        flagged = assessment.get('flagged_records') or []
+        if verdict or flagged:
+            add_para(doc, '', size=4, space_after=4)
+            add_heading(doc, 'What we believe requires your attention',
+                        level=2)
+            if verdict:
+                add_para(doc, verdict, size=11)
+            if flagged:
+                add_para(doc, '', size=4, space_after=4)
+                add_para(doc, f'{len(flagged)} record(s) flagged for your review:',
+                         bold=True, color=BRAND_SLATE, size=10, space_after=4)
+                # Render each flagged record as a styled paragraph rather
+                # than a bullet list so the section / identifier / note
+                # tags read cleanly.
+                for idx, f in enumerate(flagged, start=1):
+                    section = str(f.get('section') or '?').strip()
+                    identifier = str(f.get('identifier') or '').strip()
+                    note = str(f.get('note') or '').strip()
+                    p = doc.add_paragraph()
+                    p.paragraph_format.space_after = Pt(4)
+                    p.paragraph_format.left_indent = Inches(0.25)
+                    r1 = p.add_run(f'{idx}. ')
+                    r1.bold = True; r1.font.name = BRAND_FONT; r1.font.size = Pt(10)
+                    r2 = p.add_run(f'[{section}] ')
+                    r2.font.bold = True; r2.font.name = BRAND_FONT; r2.font.size = Pt(10)
+                    r2.font.color.rgb = RGBColor.from_string(BRAND_PINK)
+                    r3 = p.add_run(identifier)
+                    r3.font.bold = True; r3.font.name = BRAND_FONT; r3.font.size = Pt(10)
+                    r3.font.color.rgb = RGBColor.from_string(BRAND_NAVY)
+                    if note:
+                        r4 = p.add_run(f'  —  {note}')
+                        r4.font.name = BRAND_FONT; r4.font.size = Pt(10)
+            else:
+                add_para(doc,
+                         'No specific records from this monitoring period '
+                         'have been flagged. The results below are returned '
+                         'for completeness; nothing currently looks like it '
+                         'requires action.',
+                         italic=True, color=BRAND_LIGHT_SLATE, size=10,
+                         space_after=4)
     else:
         # Existing audit narrative \u2014 initial clearance / search context.
         add_para(doc, 'This report provides an audit based on searches carried out across multiple sources, including search engines, company registries, domain name databases, social media platforms, and trademark registries. The purpose is to identify any existing use of the name or logo, potential infringements, or similar trademarks that could conflict with the client\u2019s branding.', size=11)
