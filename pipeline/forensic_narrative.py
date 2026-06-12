@@ -316,11 +316,17 @@ def generate_per_record_commentary(client: NarrativeClient, *,
                                    records: list[VerifiedRecord],
                                    scores: list[ForensicScore],
                                    report_type: ReportType,
-                                   client_brand: dict) -> dict[str, str]:
+                                   client_brand: dict,
+                                   is_monitoring: bool = False) -> dict[str, str]:
     """One Sonnet call generates commentary for all records.
 
     Returns {record_id: commentary_paragraph}. Records keyed by their position
     in the input list (record_0 ... record_N), which the caller maps back.
+
+    `is_monitoring` (BR-011, 11 Jun 2026) swaps in the monitoring system
+    prompt — observational, non-alarming tone for scheduled monitoring
+    updates. When False (default) the existing PRE/POST application
+    branches apply.
     """
     if len(records) != len(scores):
         raise ValueError('records and scores must be the same length')
@@ -332,9 +338,12 @@ def generate_per_record_commentary(client: NarrativeClient, *,
         for i, (r, s) in enumerate(zip(records, scores))
     ]
 
-    system = (_pre_application_system_prompt()
-              if report_type == ReportType.PRE_APPLICATION
-              else _post_registration_system_prompt())
+    if is_monitoring:
+        system = _MONITORING_PER_RECORD_PROMPT
+    else:
+        system = (_pre_application_system_prompt()
+                  if report_type == ReportType.PRE_APPLICATION
+                  else _post_registration_system_prompt())
 
     user = (
         'CLIENT BRAND CONTEXT (the mark being protected):\n'
@@ -350,6 +359,50 @@ def generate_per_record_commentary(client: NarrativeClient, *,
         max_tokens=len(records) * DEFAULT_MAX_TOKENS_PER_RECORD + 800,
     )
     return _robust_json_loads(raw)
+
+
+# ---------- Monitoring report prompts (BR-011, 11 Jun 2026) ----------------
+
+_MONITORING_PER_RECORD_PROMPT = (
+    "You are Alex Pugh, Trademark Intelligence & Brand Protection Specialist "
+    "at Braudit. You are writing per-record commentary for a SCHEDULED "
+    "MONITORING forensic appendix.\n\n"
+    "Audience: an existing client receiving their regular monitoring update. "
+    "Tone: observational, second-person, brief, non-alarming. The client has "
+    "already filed their mark — your job is to surface what we noticed during "
+    "this period, NOT to recommend filings or enforcement actions.\n\n"
+    "For each cited senior record below, write a single paragraph (80-150 "
+    "words) noting: what the record is, whether it appeared in earlier "
+    "monitoring periods or is new, and what (if anything) the client should "
+    "look at. Do NOT include: cease-and-desist language, priority ranking, "
+    "filing recommendations, or alarming framing. If a record looks routine "
+    "say so plainly.\n\n"
+    'Return STRICT JSON only. Shape: {"record_0": "paragraph...", '
+    '"record_1": "paragraph...", ...} — one key per record_id.'
+)
+
+_MONITORING_SUMMARY_PROMPT = (
+    "You are Alex Pugh, Trademark Intelligence & Brand Protection Specialist "
+    "at Braudit. You are writing the executive summary and final invitation "
+    "for a SCHEDULED MONITORING forensic appendix.\n\n"
+    "Audience: an existing client. Tone: observational, second-person, brief, "
+    "non-alarming. This is a regular monitoring update, not an audit or "
+    "enforcement decision.\n\n"
+    "Open by stating that this is the scheduled monitoring period summary. "
+    "Briefly note the volume of new records and the risk distribution. "
+    "Identify the records that most warrant the client's attention — but do "
+    "NOT make filing, enforcement, or priority-ranked recommendations. The "
+    "client decides whether to instruct further; you are surfacing what we "
+    "saw.\n\n"
+    "Then write a Final Recommendation block phrased as an invitation: "
+    'review the flagged items, and if they would like to investigate any of '
+    'them further, please get in touch and we can advise on the appropriate '
+    'next step.\n\n'
+    "Output strict JSON with these keys:\n"
+    '  "executive_summary"   : (string, 200-350 words, observational)\n'
+    '  "final_recommendation": (string, 150-250 words, invitation to engage)\n'
+    'No viability score, no recommended specification, no recommended actions.'
+)
 
 
 # ---------- Web-section commentary (BR-010, 11 Jun 2026) ------------------
@@ -475,7 +528,11 @@ def generate_extras_commentary(client: NarrativeClient, *,
 
 # ---------- Executive summary + final recommendation ----------
 
-def _summary_system_prompt(report_type: ReportType) -> str:
+def _summary_system_prompt(report_type: ReportType, is_monitoring: bool = False) -> str:
+    if is_monitoring:
+        # BR-011 — scheduled monitoring updates use a softer prompt that
+        # doesn't pre-judge filing or enforcement action.
+        return _MONITORING_SUMMARY_PROMPT
     if report_type == ReportType.PRE_APPLICATION:
         return (
             "You are Alex Pugh, Trademark Intelligence & Brand Protection Specialist at "
@@ -531,9 +588,14 @@ def generate_summary(client: NarrativeClient, *,
                      records: list[VerifiedRecord],
                      scores: list[ForensicScore],
                      report_type: ReportType,
-                     client_brand: dict) -> dict:
+                     client_brand: dict,
+                     is_monitoring: bool = False) -> dict:
     """One Sonnet call for executive summary + final recommendation +
     type-specific block (recommended specification or recommended actions).
+
+    `is_monitoring` (BR-011, 11 Jun 2026) routes to the monitoring summary
+    prompt which omits viability score / recommended spec / recommended
+    actions and frames the close as an invitation to engage further.
 
     Returns the JSON object from the model.
     """
@@ -550,7 +612,7 @@ def generate_summary(client: NarrativeClient, *,
         'Return STRICT JSON only in the exact shape specified in the system prompt.'
     )
     raw = client._call(
-        system=_summary_system_prompt(report_type),
+        system=_summary_system_prompt(report_type, is_monitoring=is_monitoring),
         user=user,
         max_tokens=DEFAULT_MAX_TOKENS_SUMMARY,
     )
@@ -578,6 +640,12 @@ class ForensicReport:
     extras: dict = field(default_factory=lambda: {
         'google': [], 'companies': [], 'domains': [], 'social': [],
     })
+    # BR-011 (11 Jun 2026) — scheduled-monitoring deliverable flag.
+    # When True the forensic_report renderer skips the "Recommended
+    # Specification" / "Recommended Actions" sections (which presume a
+    # filing or enforcement decision) and the title prefix changes to
+    # "Monitoring". Defaults False so legacy callers behave identically.
+    is_monitoring: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -629,7 +697,8 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
                        client_classes: list[int],
                        client_mark: str,
                        client_jurisdiction: str | list[str] = 'US',
-                       extras_rows: dict | None = None) -> ForensicReport:
+                       extras_rows: dict | None = None,
+                       is_monitoring: bool = False) -> ForensicReport:
     """Top-level orchestrator. Scores all records, generates per-record
     commentary in one batched call, generates executive summary in one call,
     returns a ForensicReport ready for docx rendering.
@@ -659,6 +728,7 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
             narrative_client,
             records=signa_records, scores=scores,
             report_type=report_type, client_brand=client_brand,
+            is_monitoring=is_monitoring,
         )
     except Exception as exc:
         commentaries = {
@@ -692,6 +762,7 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
             narrative_client,
             records=signa_records, scores=scores,
             report_type=report_type, client_brand=client_brand,
+            is_monitoring=is_monitoring,
         )
     except Exception as exc:
         summary = _fallback_summary(report_type, str(exc))
@@ -710,6 +781,8 @@ def run_forensic_layer(*, signa_records: list[VerifiedRecord],
             'record_count': len(signa_records),
             'extras_count': sum(len(extras.get(s, [])) for s in
                                 ('google', 'companies', 'domains', 'social')),
+            'is_monitoring': is_monitoring,
         },
         extras=extras,
+        is_monitoring=is_monitoring,
     )
