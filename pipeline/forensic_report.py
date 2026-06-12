@@ -730,10 +730,16 @@ def build_forensic_appendix(report: ForensicReport, order_meta: dict) -> bytes:
     # those scrapes — otherwise the appendix flows trademark-cards
     # straight to Recommended Spec / Actions, identical to before.
     _render_extras_sections(doc, report)
-    if report.report_type == ReportType.PRE_APPLICATION:
-        _render_pre_recommended_spec(doc, report)
-    else:
-        _render_post_recommended_actions(doc, report)
+    # BR-011 (11 Jun 2026): monitoring reports skip the
+    # Recommended Specification / Recommended Actions sections — those
+    # presume a filing or enforcement decision the client hasn't asked us
+    # to make at this stage. The monitoring summary prompt also omits
+    # those keys, so the data isn't there anyway.
+    if not getattr(report, 'is_monitoring', False):
+        if report.report_type == ReportType.PRE_APPLICATION:
+            _render_pre_recommended_spec(doc, report)
+        else:
+            _render_post_recommended_actions(doc, report)
     _render_final_recommendation(doc, report)
     _render_signoff(doc, order_meta)
 
