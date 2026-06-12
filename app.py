@@ -395,6 +395,28 @@ if submitted:
             sheets = read_sheets(tmp_path)
             tm_images = extract_trademark_images(tmp_path)
 
+        # BR-011 (11 Jun 2026) — Monitoring Report support. When the Order
+        # Form A2 cell says "Monitoring or Representation Report", filter
+        # every data sheet to rows whose Search Date equals the latest in
+        # that sheet (i.e. drop earlier monitoring periods). The latest
+        # date is also surfaced to order_meta so the report cover can show
+        # it in the Section 1 monitoring intro.
+        is_monitoring = (meta.get('document_type') or 'audit').lower() == 'monitoring'
+        latest_search_date = ''
+        if is_monitoring:
+            from pipeline.filters import filter_to_latest_search_date
+            for sheet_name in ('Google', 'Companies', 'Domains', 'Social', 'Trademarks'):
+                raw = sheets.get(sheet_name, [[]])
+                filtered, latest = filter_to_latest_search_date(raw)
+                sheets[sheet_name] = filtered
+                if latest and latest > latest_search_date:
+                    latest_search_date = latest
+            st.info(
+                f'📅 **Monitoring report mode** — data filtered to latest scrape '
+                f'period only{": " + latest_search_date if latest_search_date else ""}. '
+                f'Earlier monitoring periods are excluded.'
+            )
+
         target_classes = tuple(
             int(x.strip()) for x in classes_text.split(',') if x.strip().isdigit()
         ) or (11, 12, 35)
@@ -492,6 +514,13 @@ if submitted:
                 # these as a small (code, description) table on the cover
                 # for Image and Combined reports.
                 'vienna_classifications': meta.get('vienna_classifications', []),
+                # BR-011 (11 Jun 2026): monitoring vs audit deliverable.
+                # Detected via Order Form A2. Drives title prefix + Section
+                # 1 narrative + skips Recommended Spec / Actions in
+                # forensic appendix. latest_search_date is computed from
+                # the data sheets and rendered in the monitoring intro.
+                'document_type': meta.get('document_type', 'audit'),
+                'latest_search_date': latest_search_date,
                 'classes': classes_text,
                 'sic': sic_code,
                 'nature': nature,
@@ -574,7 +603,11 @@ if step5:
     st.divider()
     st.subheader('Download the report')
     safe_client = ''.join(c if c.isalnum() else '_' for c in step5['client_name'])[:40]
-    filename = f'Braudit Report – {safe_client} – {date.today().isoformat()}.docx'
+    # BR-011: distinguish Monitoring vs Audit in the download filename so the
+    # operator can tell them apart when filing both for the same client.
+    _doc_type = (step5['order_meta'].get('document_type') or 'audit').lower()
+    _prefix = 'Braudit Monitoring Report' if _doc_type == 'monitoring' else 'Braudit Audit Report'
+    filename = f'{_prefix} – {safe_client} – {date.today().isoformat()}.docx'
     st.download_button(
         label='⬇ Download Word report',
         data=step5['docx_bytes'],
@@ -947,6 +980,13 @@ if step5:
                     # default mode means run_forensic_layer skips the
                     # extras LLM call entirely.
                     extras_rows=extras_rows,
+                    # BR-011 — monitoring report mode switches the
+                    # narrative tone to observational and skips the
+                    # Recommended Specification / Actions sections. Read
+                    # from the order_meta we built in step 5 (auto-set
+                    # from Order Form A2 = "Monitoring or Representation
+                    # Report").
+                    is_monitoring=(step5['order_meta'].get('document_type') == 'monitoring'),
                 )
 
             # --- Phase 3: render docx ---
