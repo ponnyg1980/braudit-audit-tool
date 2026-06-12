@@ -237,6 +237,79 @@ def is_figurative_type(mark_type: str) -> bool:
     return ('figurative' in t) or ('combined' in t) or ('stylized' in t) or ('stylised' in t)
 
 
+# ---------- BR-011 (11 Jun 2026): Monitoring Report support -----------------
+
+def _parse_search_date(v) -> str:
+    """Normalise a Search Date cell value to 'YYYY-MM-DD' or '' on fail.
+
+    Accepts python datetime/date objects (what openpyxl returns for true
+    date cells), ISO strings, and the common 'YYYY-MM-DD HH:MM:SS' shape.
+    """
+    if v is None:
+        return ''
+    if hasattr(v, 'strftime'):
+        try:
+            return v.strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    s = str(v).strip()
+    if not s:
+        return ''
+    # Strip time portion if present
+    return s.split('T')[0].split(' ')[0]
+
+
+def _find_search_date_col(header) -> int | None:
+    """Scan a sheet's header row for a 'Search Date' column.
+
+    Returns the 0-based column index, or None if no such column exists.
+    Case-insensitive, tolerant of extra whitespace. Used by
+    filter_to_latest_search_date() so monitoring reports can drop rows
+    from earlier scrape periods.
+    """
+    if not header:
+        return None
+    for i, cell in enumerate(header):
+        if cell and 'search date' in str(cell).lower():
+            return i
+    return None
+
+
+def filter_to_latest_search_date(rows: list) -> tuple[list, str]:
+    """Drop rows whose Search Date isn't the latest in the sheet.
+
+    `rows` is the [header, *data] list of tuples that read_sheets() returns.
+    Returns `(filtered_rows, latest_date_iso)`.
+
+    If the sheet has no Search Date column, or every row's date is empty,
+    the input is returned unchanged with `latest_date_iso=''`. This makes
+    the function safe to apply to every sheet — sheets without dates pass
+    through untouched.
+    """
+    if not rows or len(rows) < 2:
+        return rows, ''
+    header = rows[0]
+    col_idx = _find_search_date_col(header)
+    if col_idx is None:
+        return rows, ''
+    data = rows[1:]
+    dates = []
+    for r in data:
+        if r and len(r) > col_idx:
+            d = _parse_search_date(r[col_idx])
+            if d:
+                dates.append(d)
+    if not dates:
+        return rows, ''
+    latest = max(dates)
+    kept = [
+        r for r in data
+        if r and len(r) > col_idx
+        and _parse_search_date(r[col_idx]) == latest
+    ]
+    return [header] + kept, latest
+
+
 def extract_order_metadata(xlsx_path: str) -> dict:
     """Read the Order Form sheet and return a dict of order-level metadata
     that can be used to pre-populate the audit UI.
@@ -303,6 +376,14 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'client_email': '',
         'account_manager': '',
         'prepared_by': '',
+        # BR-011 (11 Jun 2026) — type of deliverable. 'audit' = initial
+        # clearance / search-and-audit report. 'monitoring' = scheduled
+        # monitoring or representation report (ongoing surveillance).
+        # Set from Order Form A2 (the value of the document-type row,
+        # below the A1 'Search/Audit or Monitoring & Representation'
+        # heading). Default 'audit' is the safe assumption for legacy
+        # spreadsheets that don't carry this label.
+        'document_type': 'audit',
     }
     try:
         # NB: read_only=True would drop _images, which we need to detect
@@ -315,6 +396,16 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         wb.close()
         return out
     ws = wb['Order Form']
+
+    # BR-011: detect monitoring report via Order Form A2 cell. The exact
+    # wording in the template is "Monitoring or Representation Report" for
+    # monitoring; an audit/search report will have something like
+    # "Search/Audit Report" or similar. We match on the substring
+    # "monitoring" case-insensitively so cosmetic wording changes don't
+    # break detection.
+    a2_value = ws.cell(row=2, column=1).value
+    if a2_value and 'monitoring' in str(a2_value).lower():
+        out['document_type'] = 'monitoring'
 
     # Map of expected labels (lower-case, stripped) -> key in our out dict.
     # Labels are matched as-is from column A; column B is the value.
