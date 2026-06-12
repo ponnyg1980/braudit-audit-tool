@@ -543,6 +543,47 @@ if submitted:
                 'tm_dead_raw': len(tm_dead),
             }
 
+            # BR-011 Stage 2 (12 Jun 2026) — Monitoring assessment LLM pass.
+            # When this is a Monitoring Report AND the operator has an
+            # Anthropic key configured, run one batched Sonnet call to
+            # produce the "what we believe requires your attention"
+            # verdict + flagged-records list. The result is stashed into
+            # order_meta so the report builder can render the new
+            # Section 1 subsection. Failure-tolerant — if the call fails
+            # for any reason, the assessment falls back to a stock
+            # message and the rest of the report still renders.
+            if is_monitoring and st.secrets.get('anthropic_api_key'):
+                with st.spinner('Generating monitoring assessment (Sonnet 4.6)...'):
+                    try:
+                        _assess_client = NarrativeClient(
+                            api_key=st.secrets['anthropic_api_key'])
+                        order_meta['monitoring_assessment'] = (
+                            __import__('pipeline.forensic_narrative',
+                                       fromlist=['generate_monitoring_assessment'])
+                            .generate_monitoring_assessment(
+                                _assess_client,
+                                tm_live=tm_live, tm_dead=tm_dead,
+                                companies=companies, google=google,
+                                domains=domains, social=social,
+                                client_brand={
+                                    'name': client_name,
+                                    'mark': exact,
+                                    'classes': classes_text,
+                                    'countries': countries,
+                                    'sic': sic_code,
+                                },
+                            )
+                        )
+                    except Exception as _exc:
+                        order_meta['monitoring_assessment'] = {
+                            'verdict_paragraph': (
+                                f'[Monitoring assessment generation failed: '
+                                f'{_exc}.] Please review the flagged items '
+                                f'in the sections below directly.'
+                            ),
+                            'flagged_records': [],
+                        }
+
             docx_bytes = build_step5_report(
                 order_meta=order_meta,
                 trademarks_live=tm_live,
