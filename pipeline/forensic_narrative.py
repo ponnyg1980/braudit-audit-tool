@@ -405,6 +405,169 @@ _MONITORING_SUMMARY_PROMPT = (
 )
 
 
+# ---------- Monitoring assessment (BR-011 Stage 2, 12 Jun 2026) ------------
+
+_MONITORING_ASSESSMENT_SYSTEM_PROMPT = (
+    "You are Alex Pugh, Trademark Intelligence & Brand Protection Specialist "
+    "at Braudit. You are writing the Section 1 monitoring assessment for a "
+    "scheduled monitoring deliverable.\n\n"
+    "Audience: an existing client receiving their regular monitoring update. "
+    "Tone: observational, second-person, brief, non-alarming.\n\n"
+    "You will be given the results from this monitoring period across five "
+    "sources (3a Google web hits, 3b UK Companies House registrations, 3c "
+    "domain registrations, 3d social media handles, 3e+3f live + dead "
+    "trademarks). Your job is to produce a SHORT verdict paragraph plus a "
+    "list of the specific records that warrant the client's attention.\n\n"
+    "GUIDANCE:\n"
+    "- Use the supplied risk grade as a first filter — High Risk and Client "
+    "Likely records almost always warrant a flag; Medium Risk sometimes "
+    "(only if the substance looks meaningful); Low Risk and Negligible only "
+    "rarely (only when something specific looks off).\n"
+    "- Be honest. If nothing in the period looks meaningful, say so plainly. "
+    "An empty flagged list is a valid outcome.\n"
+    "- Be specific. For each flagged item, cite the actual identifier "
+    "(office + app number, company name + number, domain, handle URL, etc.) "
+    "and explain in one sentence WHY you flagged it.\n"
+    "- Do NOT recommend filings, oppositions, or cease-and-desist actions. "
+    "You are surfacing for review, not pre-judging.\n\n"
+    "Output STRICT JSON. The shape is EXACTLY:\n"
+    '{\n'
+    '  "verdict_paragraph": "string, 60-150 words. Opens with the headline '
+    '— how many records we flagged out of the total and a one-line read of '
+    'the period overall.",\n'
+    '  "flagged_records": [\n'
+    '    {\n'
+    '      "section": "3a" | "3b" | "3c" | "3d" | "3e" | "3f",\n'
+    '      "identifier": "string, short human-readable identifier (e.g. '
+    '\\"EUIPO 018500001 — WOODCROSS HOLDINGS LIMITED\\", '
+    '\\"woodcrossuk.com\\", \\"@woodcross-uk (Instagram)\\")",\n'
+    '      "note": "string, 30-80 words, why this one warrants attention"\n'
+    '    },\n'
+    '    ...\n'
+    '  ]\n'
+    '}\n'
+    "If nothing warrants attention, set flagged_records to [] and let the "
+    "verdict_paragraph say so plainly. Return STRICT JSON only — no prose."
+)
+
+
+def _build_monitoring_payload(tm_live, tm_dead, companies, google, domains, social,
+                               max_per_section: int = 50) -> dict:
+    """Pack the Step 5 results into a compact dict the LLM can reason over.
+
+    Truncates each section to `max_per_section` (sorted by risk severity)
+    so we stay well under Sonnet's prompt window even on busy months.
+    Drops bulky fields (image_bytes) that the LLM can't read anyway.
+    """
+    _RISK_ORDER = {
+        'Client Likely': 0,
+        'Very High Risk': 1, 'Very High': 1,
+        'High Risk': 2, 'High': 2,
+        'Medium Risk': 3, 'Medium': 3,
+        'Low Risk': 4, 'Low': 4,
+        'Negligible': 5,
+    }
+    def _rank(t):
+        return _RISK_ORDER.get(str(t.get('risk') or t.get('risk_band') or 'Low'), 9)
+
+    def _slim(rows, drop_keys=('image_bytes', 'keyword_image_bytes', 'raw_html')):
+        out_rows = []
+        for r in rows[:max_per_section]:
+            if not isinstance(r, dict):
+                continue
+            slim_r = {k: v for k, v in r.items()
+                      if k not in drop_keys and not isinstance(v, (bytes, bytearray))}
+            out_rows.append(slim_r)
+        return out_rows
+
+    return {
+        '3a_google':     _slim(sorted(google or [],    key=_rank)),
+        '3b_companies':  _slim(sorted(companies or [], key=_rank)),
+        '3c_domains':    _slim(sorted(domains or [],   key=_rank)),
+        '3d_social':     _slim(sorted(social or [],    key=_rank)),
+        '3e_live_tm':    _slim(sorted(tm_live or [],   key=_rank)),
+        '3f_dead_tm':    _slim((tm_dead or [])[:max_per_section]),
+    }
+
+
+def generate_monitoring_assessment(client: NarrativeClient, *,
+                                   tm_live: list, tm_dead: list,
+                                   companies: list, google: list,
+                                   domains: list, social: list,
+                                   client_brand: dict) -> dict:
+    """One Sonnet call returns a monitoring verdict + per-record flagged list.
+
+    Used by Step 5 when the deliverable is a Monitoring Report (BR-011).
+    Returns:
+        {
+            'verdict_paragraph': str,   # 60-150 words, observational verdict
+            'flagged_records': [        # specific records to review
+                {'section': '3a'|...|'3f',
+                 'identifier': str,
+                 'note': str},
+                ...
+            ]
+        }
+
+    Returns a fallback dict shape on LLM failure so the report builder
+    always has something to render. The caller can check
+    ``'_error'`` in the returned dict to know if the LLM call failed.
+    """
+    payload = _build_monitoring_payload(tm_live, tm_dead, companies, google, domains, social)
+    total_records = sum(len(v) for v in payload.values())
+
+    user = (
+        'CLIENT BRAND CONTEXT (the mark being monitored):\n'
+        f'{json.dumps(client_brand, indent=2)}\n\n'
+        f'MONITORING PERIOD RESULTS (total {total_records} records across all sections):\n'
+        f'{json.dumps(payload, indent=2, default=str)}\n\n'
+        'Return STRICT JSON in the exact shape from the system prompt.'
+    )
+
+    try:
+        raw = client._call(
+            system=_MONITORING_ASSESSMENT_SYSTEM_PROMPT,
+            user=user,
+            max_tokens=2500,
+        )
+        parsed = _robust_json_loads(raw)
+    except Exception as exc:
+        return {
+            'verdict_paragraph': (
+                f'[Monitoring assessment generation failed: {exc}.] '
+                f'Please review the {total_records} flagged records in the '
+                f'sections below directly.'
+            ),
+            'flagged_records': [],
+            '_error': str(exc),
+        }
+
+    # Defensive shaping — even if the model returned the wrong shape, give
+    # the renderer something sensible.
+    if not isinstance(parsed, dict):
+        parsed = {}
+    verdict = parsed.get('verdict_paragraph') or (
+        f'{total_records} results returned this monitoring period — please '
+        f'review the flagged items in the sections below.'
+    )
+    flagged = parsed.get('flagged_records') or []
+    if not isinstance(flagged, list):
+        flagged = []
+    # Filter out malformed entries
+    clean_flagged = []
+    for f in flagged:
+        if not isinstance(f, dict):
+            continue
+        if not f.get('identifier'):
+            continue
+        clean_flagged.append({
+            'section': str(f.get('section') or '?'),
+            'identifier': str(f.get('identifier') or ''),
+            'note': str(f.get('note') or ''),
+        })
+    return {'verdict_paragraph': str(verdict), 'flagged_records': clean_flagged}
+
+
 # ---------- Web-section commentary (BR-010, 11 Jun 2026) ------------------
 
 _EXTRAS_SECTION_BRIEFS = {
