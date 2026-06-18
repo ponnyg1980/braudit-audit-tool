@@ -378,24 +378,69 @@ def build_step5_report(*, order_meta: dict,
     else:
         specific_terms_display = '\u2014'
 
+    # BR-012 (12 Jun 2026): default empty cover fields to '(not specified)'
+    # so the cover doesn't show eerie blank cells. The Hopper-style Order
+    # Form sometimes ships with the Word Or Image / SIC / Nature / Countries
+    # / Search Platforms rows left as template stencil text \u2014 those get
+    # filtered to empty by the parser and rendered here as a clear marker
+    # rather than misleading text.
+    _NS = '(not specified)'
+    def _v(field: str, default: str = _NS) -> str:
+        """Render order_meta field, substituting '(not specified)' when empty."""
+        raw = order_meta.get(field, '')
+        return raw if raw and str(raw).strip() else default
+
+    client_contact = f"{order_meta.get('client_first','')} {order_meta.get('client_last','')}".strip() or _NS
+
     cover_rows = [
-        ['Prepared for', order_meta.get('client_name', '')],
-        ['Brand Reference', order_meta.get('brand_reference', '') or '\u2014'],
-        ['Report Reference', order_meta.get('report_reference', '') or '\u2014'],
-        ['Client Contact', f"{order_meta.get('client_first','')} {order_meta.get('client_last','')}".strip()],
-        ['Client Email', order_meta.get('client_email', '')],
-        ['Account Manager', order_meta.get('account_manager', '')],
-        ['Report Prepared By', order_meta.get('prepared_by', '')],
-        ['Date of Search', order_meta.get('search_date', '')],
+        ['Prepared for', order_meta.get('client_name', '') or _NS],
+        ['Brand Reference', _v('brand_reference')],
+        ['Report Reference', _v('report_reference')],
+        ['Client Contact', client_contact],
+        ['Client Email', _v('client_email')],
+        ['Account Manager', _v('account_manager')],
+        ['Report Prepared By', _v('prepared_by')],
+        ['Date of Search', order_meta.get('search_date', '') or '\u2014'],
         ['Type of Search', order_meta.get('search_type', 'Word')],
-        ['Mark', order_meta.get('mark_label', '')],
-        ['Trademark Classes', classes_display],
+        ['Mark', order_meta.get('mark_label', '') or _NS],
+        ['Trademark Classes', classes_display or _NS],
         ['Specific Terms', specific_terms_display],
-        ['SIC Code', order_meta.get('sic', '')],
-        ['Nature of Business', order_meta.get('nature', '')],
-        ['Designated Countries', order_meta.get('countries', '')],
-        ['Filtering Rules', order_meta.get('filtering_rules', '')],
+        ['SIC Code', _v('sic')],
+        ['Nature of Business', _v('nature')],
+        ['Designated Countries', _v('countries')],
+        ['Filtering Rules', order_meta.get('filtering_rules', '') or '\u2014'],
     ]
+    # BR-012 (12 Jun 2026): "Missing data" notice. Lists Cover fields the
+    # operator didn't fill in on the Order Form. Renders as italic note
+    # immediately above the cover table so the reader knows the gap is
+    # genuine (not a system bug) and can ask the operator to top up.
+    missing_fields = []
+    for label, key in [
+        ('Word Or Image', 'word_or_image'),
+        ('SIC Code', 'sic'),
+        ('Nature of Business', 'nature'),
+        ('Designated Countries', 'countries'),
+        ('Search Platforms', 'search_platforms'),
+        ('Brand Reference', 'brand_reference'),
+        ('Report Reference', 'report_reference'),
+        ('Account Manager', 'account_manager'),
+        ('Report Prepared By', 'prepared_by'),
+        ('Client First Name', 'client_first'),
+        ('Client Last Name', 'client_last'),
+        ('Client Email', 'client_email'),
+    ]:
+        raw = order_meta.get(key, '')
+        if not raw or not str(raw).strip():
+            missing_fields.append(label)
+    if missing_fields:
+        add_para(doc, '', size=4, space_after=2)
+        add_para(doc,
+                 'Missing Order Form fields (rendered as "(not specified)" '
+                 'below): ' + ', '.join(missing_fields) + '. '
+                 'These were not populated in the uploaded spreadsheet — '
+                 'please ask the operator to fill them in and re-run if needed.',
+                 italic=True, color=BRAND_LIGHT_SLATE, size=9, space_after=4)
+
     t = doc.add_table(rows=len(cover_rows), cols=2)
     t.autofit = False
     # Widths sum to USABLE_PAGE_WIDTH_IN (7.0") so the table does NOT
