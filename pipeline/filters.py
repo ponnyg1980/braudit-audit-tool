@@ -422,6 +422,9 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'report reference': 'report_reference',
         'client first name': 'client_first',
         'client last name': 'client_last',
+        # Hopper-style template (Jun 2026) renamed these labels:
+        'contact first name': 'client_first',
+        'contact last name': 'client_last',
         'client email address': 'client_email',
         'account manager': 'account_manager',
         'report prepared by': 'prepared_by',
@@ -436,12 +439,28 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         'add single field - usually word mark text',
         'contact first name',
         'contact last name',
+        'contact email',
         'contact email address',
         'deal owner',
         'deal name',
+        'pipeline name',
+        '{{pipeline name}} report',
         'headshot',  # R42 placeholder for an image cell in the legacy template
         'completed by tmh',
         'completed by suntec of tmh',
+        # Hopper-template placeholders (Jun 2026) — these are template-stencil
+        # strings the operator should overwrite. When seen, treat as empty so
+        # downstream code can render "(not specified)" rather than leaking the
+        # placeholder into the report.
+        'type',                                       # row 14 B placeholder
+        'sic code',                                   # row 15 B placeholder
+        'additional sic code, nature of business',    # row 16 B placeholder
+        'tm search platforms',                        # row 17 B placeholder
+        'other search platforms',                     # row 18 B placeholder
+        'applicant account name',                     # Order Form (2) wireframe
+        'crm deal id',                                # Order Form (2) wireframe
+        'image mark information/image jpeg',          # Order Form (2) wireframe
+        'added manually post search',                 # operator-typed "fill in later" marker
     }
     def _real_value(b) -> str:
         if b is None:
@@ -490,9 +509,25 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         # so 'Client first name *' matches 'client first name'.
         a_key = a_str.rstrip('*').strip().lower()
 
-        # Direct label-value matches
+        # Direct label-value matches.
+        # BR-012 (12 Jun 2026): "first non-empty wins" — the Hopper-style
+        # template carries duplicate label blocks (a populated block at
+        # rows 5-18 AND a legacy wireframe block at rows 58-71 with
+        # placeholder text). Without this guard the legacy block would
+        # overwrite the real values with placeholders. Once a field has
+        # been set to a real value, later rows with the same label are
+        # silently skipped.
         if a_key in label_map:
-            out[label_map[a_key]] = _real_value(b)
+            field = label_map[a_key]
+            new_val = _real_value(b)
+            existing = out.get(field)
+            if not existing:                  # field still empty → set it
+                out[field] = new_val
+            # If the field already has a value, only overwrite when the
+            # new value is non-empty too — but never replace a real value
+            # with a placeholder/empty.
+            elif new_val and not existing.strip():
+                out[field] = new_val
             continue
 
         # Context switching for the dual 'Exact Match' labels. Multiple
@@ -603,24 +638,45 @@ def extract_order_metadata(xlsx_path: str) -> dict:
         out['classes_csv'] = ', '.join(str(n) for n in class_nums)
 
     # Embedded images on the Order Form sheet — operator pastes the actual
-    # logo image into cell B30 / B31 rather than typing a filename. Walk the
-    # sheet's image collection and look for anchors at row 30 / row 31,
-    # column 2 (B). When found, store the raw bytes in image_N_bytes and
-    # the format in image_N_format; promote the cell label to the
-    # '<embedded image>' sentinel if the text cell was empty.
+    # logo image into the cell next to 'Image Mark 1' / 'Image Mark 2'.
+    # BR-012 (12 Jun 2026): switched from hardcoded rows 30/31 to dynamic
+    # label discovery, because the Hopper-style template moved this block
+    # to rows 37/38. We scan column A for the labels first, then match
+    # image anchors to the resolved rows (column B, +/-1 for tall images).
+    image_label_rows: dict[str, int] = {}  # 'image_1' or 'image_2' -> 1-based row
+    for r in range(1, min(ws.max_row + 1, 100)):
+        a = ws.cell(row=r, column=1).value
+        if a is None:
+            continue
+        a_norm = str(a).rstrip('*').strip().lower()
+        if a_norm == 'image mark 1' and 'image_1' not in image_label_rows:
+            image_label_rows['image_1'] = r
+        elif a_norm == 'image mark 2' and 'image_2' not in image_label_rows:
+            image_label_rows['image_2'] = r
+    # Back-compat: if no labels found, fall back to legacy rows 30/31.
+    if not image_label_rows:
+        image_label_rows = {'image_1': 30, 'image_2': 31}
+
     for img in (getattr(ws, '_images', None) or []):
         try:
             anchor = img.anchor
             from_ = getattr(anchor, '_from', None)
             if from_ is None:
                 continue
-            # openpyxl uses 0-indexed AnchorMarker; col 1 == B, row 29 == row 30
+            # openpyxl uses 0-indexed AnchorMarker; col 1 == B.
             if from_.col != 1:
                 continue
             row_1based = from_.row + 1
-            if row_1based not in (30, 31):
+            # Match the anchor row to whichever 'Image Mark N' label is closest
+            # (within ±2 rows — Excel anchors are sometimes off-by-one for tall
+            # images that bleed into adjacent cells).
+            slot = None
+            for candidate_slot, label_row in image_label_rows.items():
+                if abs(row_1based - label_row) <= 2:
+                    slot = candidate_slot
+                    break
+            if slot is None:
                 continue
-            slot = 'image_1' if row_1based == 30 else 'image_2'
             # Pull raw bytes — _data() is the openpyxl Image API
             try:
                 blob = img._data()
