@@ -996,8 +996,87 @@ def read_sheets(xlsx_path: str) -> dict:
     return sheets
 
 
-def score_trademark(r: tuple, target_classes=(11, 12, 35), root='STEALTH') -> int:
-    """Initial-review WORD score on data alone."""
+def _mark_similarity_score(mark_u: str, word_searches: list[dict] | None,
+                           root: str) -> int:
+    """Return the mark-similarity component of the word score.
+
+    BR-013 (19 Jun 2026): replace the single-root "exact or starts-with"
+    test with a per-search-row scan. The operator's word_searches list
+    drives which rows of cited marks land in the report (handled in the
+    filter layer via mark_matches_search_row). This function gives those
+    same matches a SCORING reward — previously only Exact-or-StartsWith
+    matches against the first word of the first Exact phrase scored
+    anything, so "Similar To" and "Contains" hits got into the report but
+    were graded as if their mark text was unrelated to the brand. That
+    explains why marks like MOMENTUM MORTGAGE and Momentous (1-letter
+    variants of MOMENTUS in class 36) all sat at Low Risk despite being
+    obvious threats.
+
+    Points awarded (max across all matching rows):
+        Exact Match     +4   (mark equals an Exact phrase)
+        Starts With     +2   (mark begins with a Starts-With phrase + sep)
+        Contains        +2   (Contains phrase appears as a whole word)
+        Similar (>=.85) +2   (whole-string OR token-level fuzzy)
+        Similar (>=.78) +1   (whole-string OR token-level fuzzy)
+
+    Falls back to the legacy root-based behaviour when no word_searches
+    are supplied (preserves back-compat with legacy Step-5 callers).
+    """
+    if not word_searches:
+        # Legacy path: original Exact-or-StartsWith-root behaviour.
+        root_u = (root or '').upper().strip()
+        if not root_u:
+            return 0
+        if mark_u == root_u:
+            return 4
+        if mark_u.startswith(root_u + ' ') or mark_u.startswith(root_u + '-'):
+            return 2
+        return 0
+
+    best = 0
+    for ws in word_searches:
+        stype = (ws.get('type', '') or '').lower().strip()
+        phrase = (ws.get('phrase', '') or '').upper().strip()
+        if not phrase:
+            continue
+        if stype == 'exact match':
+            if mark_u == phrase:
+                best = max(best, 4)
+        elif stype == 'starts with':
+            if (mark_u == phrase or mark_u.startswith(phrase + ' ')
+                    or mark_u.startswith(phrase + '-')):
+                best = max(best, 2)
+        elif stype == 'contains':
+            # Whole-word boundary so 'MOMENTUS' doesn't match 'INSTRUMENTUS'.
+            if re.search(r'\b' + re.escape(phrase) + r'\b', mark_u):
+                best = max(best, 2)
+        elif stype == 'similar to':
+            whole = _fuzzy_ratio(mark_u, phrase)
+            if whole >= 0.85:
+                best = max(best, 2)
+            elif whole >= 0.78:
+                best = max(best, 1)
+            # Token-level: a single mark token close to the phrase is the
+            # common case (e.g. mark 'MOMENTUM MORTGAGE' vs phrase
+            # 'MOMENTUS' — token 'MOMENTUM' fuzzy-matches at ~0.875).
+            for tok in mark_u.split():
+                tr = _fuzzy_ratio(tok, phrase)
+                if tr >= 0.85:
+                    best = max(best, 2)
+                elif tr >= 0.78:
+                    best = max(best, 1)
+    return best
+
+
+def score_trademark(r: tuple, target_classes=(11, 12, 35), root='STEALTH',
+                    word_searches: list[dict] | None = None) -> int:
+    """Initial-review WORD score on data alone.
+
+    The mark-similarity component is now driven by `word_searches` (the
+    operator's per-row Exact / Starts With / Contains / Similar To list)
+    when supplied. When `word_searches` is None or empty, falls back to
+    the legacy root-word behaviour so older callers keep working.
+    """
     status = cleanstr(r[2]).lower()
     mark = cleanstr(r[5]).upper()
     mtype = cleanstr(r[3])
@@ -1012,10 +1091,7 @@ def score_trademark(r: tuple, target_classes=(11, 12, 35), root='STEALTH') -> in
         score += 3
     # 'ended' contributes 0
 
-    if mark == root.upper():
-        score += 4
-    elif mark.startswith(root.upper() + ' '):
-        score += 2
+    score += _mark_similarity_score(mark, word_searches, root)
 
     if mtype.lower() == 'word':
         score += 2
@@ -1242,7 +1318,8 @@ def process_trademarks(rows: list, target_classes=(11, 12, 35), root='STEALTH',
     scored = []
     for row_num, r in filtered:
         status_str = cleanstr(r[2])
-        word_score = score_trademark(r, target_classes, root)
+        word_score = score_trademark(r, target_classes, root,
+                                     word_searches=word_searches)
         image_score = score_trademark_image(r, target_classes, client_vienna)
         word_risk = risk_from_score(word_score, status_str)
         image_risk = risk_from_score(image_score, status_str)
