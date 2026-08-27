@@ -1,0 +1,2841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Free Trademark Search — The Trademark Helpline</title>
+  <!-- Shared design layer. Loads BEFORE this page's own <style>, so
+       anything below overrides it — page-specific rules stay local. -->
+  <link rel="stylesheet" href="/braudit.css">
+<style>
+  /* ---- TMH brand tokens (from brand_tokens.py) ---- */
+  /* ---- TMH hexagon pulse loader (Jonathan's spec, 10 Aug 2026) ----
+     Pure CSS, no images, no JS — starts animating the moment it appears.
+     Shown only where a wait is genuinely long enough to warrant it; the
+     timing rules from the spec are enforced in busyOn() below, not here. */
+  .tmh-loader{display:inline-flex;gap:9px;align-items:center}
+  .tmh-loader i{width:20px;height:23px;display:block;
+    clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%);
+    animation:tmh-hexpulse 1.15s ease-in-out infinite}
+  .tmh-loader i:nth-child(1){background:#E0004D}
+  .tmh-loader i:nth-child(2){background:#2D455A;animation-delay:.16s}
+  .tmh-loader i:nth-child(3){background:#E0004D;animation-delay:.32s}
+  /* Respect people who limit motion on their device */
+  @media (prefers-reduced-motion:reduce){.tmh-loader i{animation:none;opacity:.6;transform:none}}
+  .tmh-busy{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:12px;padding:26px 0}
+  .tmh-busy .msg{font-size:14px;color:var(--muted)}
+  /* Full-card overlay for the main search, which is the longest wait and a
+     screen change — the visitor must not be able to press Begin twice. */
+  /* Fully opaque backdrop. At .92 the page beneath showed through the
+     Did-you-know card and the two sets of text collided — legible enough in a
+     screenshot, unreadable in practice. The card itself is a solid panel for
+     the same reason: this is something we want people to actually read. */
+  .tmh-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:16px;padding:20px}
+  /* Embedded (WordPress iframe): "fixed" spans the whole content-height
+     iframe, so vertical centring puts the card far below the visitor's
+     viewport — it looked crashed (Jonathan, 26 Aug). Anchor to the top and
+     ask the parent to scroll the widget into view instead. */
+  .tmh-overlay.embedded{justify-content:flex-start;padding-top:110px}
+  .tmh-overlay .msg{font-size:15px;color:var(--navy);font-weight:600}
+  .tmh-overlay .sub{font-size:14px;color:var(--muted)}
+  .tmh-overlay .nug{background:#fff;border:1px solid var(--line);
+    border-radius:var(--r-xl);box-shadow:var(--shadow);width:100%}
+
+
+  /* ---- richer result rows + the class picker (10 Aug 2026) ---- */
+  .hres .r .meta{display:block;color:var(--muted);font-size:12px;margin-top:2px}
+  .hres .r .feat{display:inline-block;font-size:11px;font-weight:700;text-transform:uppercase;
+    letter-spacing:.03em;color:var(--navy);background:#eef2f5;border-radius:999px;padding:1px 7px;margin-left:6px}
+  .hres .r .cls{display:block;color:var(--ink);font-size:12px;margin-top:3px;line-height:1.45}
+  .hres .r .cls b{color:var(--pink)}
+  .pickbox{border:1.5px solid var(--pink);border-radius:12px;background:#fef4f7;padding:14px;margin-top:10px}
+  .pickbox h4{margin:0 0 3px;font-size:14px;color:var(--navy)}
+  .pickrow{display:flex;align-items:flex-start;gap:9px;padding:7px 9px;background:#fff;border:1px solid var(--line);
+    border-radius:9px;margin-bottom:6px;cursor:pointer}
+  .pickrow input{margin-top:3px;flex:0 0 auto;width:16px;height:16px;accent-color:var(--pink);cursor:pointer}
+  .pickrow .n{font-weight:700;color:var(--pink);flex:0 0 28px}
+  .pickrow .lbl{font-size:13px;color:var(--ink);line-height:1.4}
+  .pickacts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center}
+
+
+  /* ---- guided business-description form (route 1), 10 Aug 2026 ---- */
+  .q{margin:0 0 14px}
+  .q .qt{font-size:13.5px;font-weight:700;color:var(--navy);margin:0 0 5px;line-height:1.4}
+  .q .qh{font-size:12px;color:var(--muted);margin:0 0 6px;line-height:1.45}
+  .q input[type=text],.q input[type=url],.q textarea{width:100%;padding:9px 11px;border:1px solid var(--line);
+    border-radius:9px;font-family:var(--font);font-size:13.5px;color:var(--ink)}
+  .q textarea{min-height:58px;resize:vertical}
+  .q input:focus,.q textarea:focus{outline:none;border-color:var(--pink);box-shadow:0 0 0 3px rgba(229,22,82,.12)}
+  .qseg{display:flex;gap:6px;flex-wrap:wrap}
+  .qseg button{padding:8px 13px;border:1.5px solid var(--line);background:#fff;border-radius:999px;
+    font-family:var(--font);font-size:13px;font-weight:600;color:var(--navy);cursor:pointer}
+  .qseg button.on{border-color:var(--pink);background:var(--pink);color:#fff}
+  .qsep{border-top:1px solid var(--line);margin:16px 0 13px;padding-top:13px}
+  .qsep .st{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:10px}
+  .q .opt{font-weight:400;color:var(--muted)}
+
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--font);color:var(--ink);background:var(--bg);
+    line-height:1.5;-webkit-font-smoothing:antialiased}
+
+  .brand{display:flex;align-items:center;gap:14px;padding:8px 2px 20px}
+
+  /* Class Builder review screen */
+  .txt{width:100%;padding:11px 13px;border:1.5px solid var(--line,#d9dee4);border-radius:9px;
+       font:inherit;font-size:15px;box-sizing:border-box}
+  .rv-block{border:1.5px solid var(--line,#d9dee4);border-radius:12px;padding:16px 18px;margin:0 0 14px}
+  .rv-block h3{margin:0 0 2px;font-size:17px}
+  .rv-block .rv-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+  .rv-block .rv-x{background:none;border:0;color:#c0392b;font-weight:700;cursor:pointer;font-size:13px}
+  .rv-block label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;
+       letter-spacing:.4px;color:var(--muted);margin:12px 0 4px}
+  .rv-block textarea{width:100%;box-sizing:border-box;font:inherit;font-size:14px;
+       border:1.5px solid var(--line,#d9dee4);border-radius:9px;padding:10px 12px;resize:vertical}
+  .steps{display:flex;gap:6px;margin:0 0 20px;flex-wrap:wrap}
+  .steps .s{flex:1;min-width:88px;font-size:11px;font-weight:700;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.06em;padding:8px 4px;border-top:3px solid var(--line);text-align:center}
+  .steps .s.active{color:var(--navy);border-top-color:var(--pink)}
+  .steps .s.done{color:var(--navy);border-top-color:var(--navy)}
+  h2{color:var(--navy);font-size:22px;margin:0 0 6px}
+  h3{color:var(--navy)}
+
+  label.fld{display:block;font-weight:700;color:var(--navy);margin:14px 0 6px;font-size:14px}
+  label.fld .opt{color:var(--muted);font-weight:500;font-size:12px}
+  input[type=text],input[type=email],input[type=tel],textarea,select{
+    width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:10px;
+    font-size:15px;font-family:inherit;color:var(--ink);background:#fff}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pink);box-shadow:0 0 0 3px rgba(229,22,82,.12)}
+  textarea{min-height:74px;resize:vertical}
+  @media(max-width:640px){.cols{grid-template-columns:1fr}.search-row{flex-direction:column}}
+  .muted-note{color:var(--muted);font-size:13px;margin-top:8px}
+
+  .juris-block{padding-top:6px}
+  .reveal{border-top:1px dashed var(--line);margin-top:22px;padding-top:20px}
+  .seg{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .seg .opt{padding:11px 16px;border:1.5px solid var(--line);border-radius:10px;cursor:pointer;
+    font-weight:700;color:var(--navy);background:#fff}
+  .seg .opt.on{border-color:var(--pink);background:var(--pink);color:#fff}
+  .pop{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
+  .pop .c{padding:9px 14px;border:1.5px solid var(--line);border-radius:999px;cursor:pointer;
+    font-weight:600;font-size:14px;color:var(--navy);background:#fff}
+  .pop .c.on{border-color:var(--pink);background:#fef4f7;color:var(--pink)}
+  .pop .c small{color:var(--muted);font-weight:500}
+  @media(max-width:640px){.summary{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:640px){.op-dials{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:700px){.nexts{grid-template-columns:1fr}}
+
+  .benefits{list-style:none;padding:0;margin:16px 0}
+  .benefits li{padding:8px 0 8px 30px;position:relative;color:var(--navy);font-weight:600}
+  .benefits li:before{content:'✓';position:absolute;left:0;color:var(--pink);font-weight:800}
+  .portal-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}
+  .done-mark{width:64px;height:64px;border-radius:50%;background:var(--r-low);color:#2f6b23;display:grid;
+    place-items:center;font-size:34px;margin:0 auto 14px}
+  .tag{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;padding:3px 8px;border-radius:999px;background:#eef2f4;color:var(--muted)}
+  .tag.best{background:var(--pink);color:#fff}
+  .tag.free{background:var(--r-low);color:#2f6b23}
+  .tag.ai{background:#e7ddff;color:#5b3fb0}
+  .hbar{display:flex;gap:8px}
+  .hbar input{flex:1;padding:11px 12px;border:1.5px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit}
+  .hres{margin-top:10px;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .hres .r{padding:9px 12px;border-bottom:1px solid var(--line);cursor:pointer;font-size:13px;display:flex;gap:8px;align-items:baseline}
+  .hres .r:last-child{border-bottom:0}
+  .hres .r:hover{background:#fff}
+  .hres .rn{font-weight:700;color:var(--pink);min-width:120px}
+  .gate-note{background:#f6f2ff;border:1px solid #ddd0ff;color:#5b3fb0;border-radius:9px;padding:10px 12px;font-size:13px}
+  .mode-flag{position:fixed;bottom:10px;right:12px;font-size:11px;color:var(--muted);background:#fff;
+    border:1px solid var(--line);border-radius:8px;padding:4px 8px}
+
+  /* ===== free-search page layer — everything shared lives in braudit.css ===== */
+  .brand{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+  .site-logo{height:44px;width:auto;display:block}
+
+  /* step 1 */
+  .card.s1{display:grid;grid-template-columns:1fr 200px;gap:36px;align-items:center;
+    padding:52px 40px 56px}
+  .card.s1 h1{font-size:38px;letter-spacing:-1.1px}
+  .card.s1 .lead{font-size:17px;max-width:560px}
+  .hero-in{border-radius:var(--r-md);padding:19px 20px;font-size:19px;font-weight:600}
+  .s1-owl{width:100%;max-width:200px}
+
+  /* step 2 */
+  .name-in{max-width:420px;padding:13px 15px;font-weight:600}
+  .drop{border:1.5px dashed var(--pink-line);border-radius:var(--r-md);background:#fff;
+    padding:20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .drop b{font-size:15.5px;font-weight:800;color:var(--navy)}
+  .skip{background:none;border:0;padding:10px 0 0;font-size:14.5px;font-weight:700;
+    color:var(--pink);text-decoration:underline;cursor:pointer;font-family:inherit}
+  .skip:hover{color:var(--pink-hover)}
+  .later{border:1px solid var(--line);border-radius:var(--r-md);background:#fff;
+    padding:18px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    font-size:15px;color:var(--slate)}
+  .btn.sm{padding:12px 18px;font-size:14.5px}
+
+  /* step 3 */
+  .juris-block{margin-bottom:30px}
+  .jhead{display:flex;align-items:center;gap:14px;margin-bottom:14px}
+  .jhead h3{font-size:19px;letter-spacing:-.3px;margin:0}
+  .pill.lg{padding:12px 20px;font-size:15px}
+  /* Only the RESTING navy pill is grey — this rule sits in the page layer,
+     which loads after braudit.css, so without :not(.on) it overrode the
+     white text on the selected state and left grey-on-navy. */
+  .pill.navy:not(.on){color:var(--quiet)}
+  .eu-note{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:18px}
+
+  .qchecks{display:grid;gap:8px;margin-top:4px}
+  .qchecks label{display:flex;align-items:flex-start;gap:10px;font-size:15px;
+    line-height:1.45;color:var(--ink);cursor:pointer;padding:9px 12px;
+    border:1.5px solid var(--line);border-radius:var(--r-sm);background:#fff;
+    transition:border-color .15s ease,background .15s ease}
+  .qchecks label:hover{border-color:var(--field-line)}
+  .qchecks input{width:auto;flex:0 0 auto;margin:2px 0 0;accent-color:var(--pink)}
+  .qchecks label:has(input:checked){border-color:var(--pink);background:var(--pink-tint)}
+
+  .didyou{padding:11px 14px;margin-bottom:6px;border-radius:var(--r-sm);
+    background:var(--pink-tint);border:1px solid var(--pink-line);
+    font-size:14px;color:var(--navy);font-weight:600}
+
+  /* step 3 picker — reuses the step-4 grid so the two screens feel the same */
+  .quick{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+  .pill.sm{padding:8px 14px;font-size:13.5px}
+  .listbox .row span:first-child:empty{display:none}
+  .madrid{margin-top:14px;border-style:dashed;border-color:var(--pink-line);
+    background:#fff}
+  .madrid .sub{font-size:14px}
+
+  /* step 4 */
+  .cls-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start}
+  .cls-search{margin-bottom:12px}
+  .listbox{border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;
+    max-height:330px;overflow-y:auto;background:#fff}
+  .listbox .row{display:grid;grid-template-columns:44px 1fr 22px;gap:8px;align-items:center;
+    width:100%;border:0;border-top:1px solid var(--line);padding:14px 16px;cursor:pointer;
+    text-align:left;font-family:inherit;background:#fff;font-size:16px}
+  .listbox .row:first-child{border-top:0}
+  .listbox .row.on{background:var(--pink-tint)}
+  .listbox .row.on span:nth-child(2){font-weight:700}
+  .listbox .row .n{font-family:var(--font-display);font-size:13px;font-weight:800;
+    color:var(--pink)}
+  .listbox .row .g{color:var(--pink);font-size:16px;font-weight:800;text-align:right}
+  .basket{border:1px solid var(--line);border-radius:var(--r-md);padding:18px;
+    min-height:110px;display:flex;flex-wrap:wrap;gap:8px;align-content:flex-start;
+    background:var(--panel)}
+  .gatebox{border:1.5px solid var(--pink);background:var(--pink-tint);
+    border-radius:var(--r-md);padding:16px 18px;text-align:left;font-weight:400;
+    color:var(--ink);font-size:15px;line-height:1.55}
+  .gatebox b{display:block;margin-bottom:8px;color:var(--navy);font-size:16px}
+  .gatebox ul{margin:0 0 14px;padding-left:20px}
+  .gatebox li{margin:3px 0}
+  .go-here{margin-top:18px}
+  .go-here .sub{text-align:center;margin-top:8px;font-size:13.5px}
+  .help-head{display:flex;gap:20px;flex-wrap:wrap;align-items:center;
+    margin-top:30px;padding-top:30px;border-top:1px solid var(--line)}
+  .opt-block.tool .opt-row{align-items:start}
+  .tick.tool-n{background:transparent;border:0;font-family:var(--font-display);
+    font-size:15px;font-weight:800;color:var(--muted)}
+  .opt-block.tool.on .tick.tool-n{background:transparent;border:0;color:var(--pink)}
+  .tool-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  .tool-h h4{margin:0;font-size:20px;letter-spacing:-.4px}
+  .badge{font-family:var(--font-display);font-size:10.5px;font-weight:800;letter-spacing:1px;
+    text-transform:uppercase;color:#fff;background:var(--navy);border-radius:var(--r-pill);
+    padding:5px 10px}
+  .badge.ai{background:var(--pink)}
+
+  /* results */
+  .restable{border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;
+    margin-bottom:34px;background:#fff}
+  .rt-head,.rt-row{display:grid;grid-template-columns:110px 1.3fr 1.5fr 130px 120px;gap:14px}
+  .rt-head{padding:13px 20px;background:var(--panel);border-bottom:1px solid var(--line);
+    font-family:var(--font-display);font-size:10.5px;font-weight:800;letter-spacing:1.2px;
+    text-transform:uppercase;color:var(--muted)}
+  .rt-row{align-items:center;padding:15px 20px;border-top:1px solid var(--line);font-size:14.5px}
+  .rt-row:first-child{border-top:0}
+  .rt-row .mk{font-size:15.5px;font-weight:800;color:var(--ink)}
+  .rt-row .ow{color:var(--quiet)}
+  /* Ownership is the lead-capture unlock. Rather than a bare em-dash that
+     reads like missing data, say WHY it's blank and where to get it
+     (Jonathan, 26 Aug). Red, because it's the thing they're missing. */
+  .ow-lock{color:var(--risk-high);font-weight:600}
+  .rt-row .ty,.rt-row .st{color:var(--slate)}
+  .co{font-size:13px;color:var(--quiet);margin-top:3px}
+  .co .dead{color:var(--risk-high);font-weight:700}
+
+  .opinion{border:1px solid var(--line);border-radius:18px;overflow:hidden;margin-bottom:26px;
+    background:#fff}
+  .op-top{padding:28px 30px;display:grid;grid-template-columns:190px 1fr;gap:28px;
+    align-items:center}
+  .op-master{display:flex;flex-direction:column;align-items:center}
+  .op-say h2{font-size:26px;margin:0 0 10px}
+  .op-say p{font-size:16px;line-height:1.62;color:var(--slate);margin:0 0 10px}
+  .op-say p:last-child{margin-bottom:0}
+  .op-say p.op-caveat{font-size:14.5px;color:var(--muted)}
+  .op-dials{border-top:1px solid var(--line);background:var(--panel-soft);padding:26px 30px;
+    display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+  .subdial{display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center}
+  .subdial .nm{font-size:15.5px;font-weight:800;color:var(--navy)}
+  .subdial .sb{font-size:13.5px;line-height:1.5;color:var(--quiet);max-width:190px}
+
+  .nexts{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;margin-bottom:34px;
+    align-items:stretch}
+  .nx{border:1px solid var(--line);border-radius:var(--r-xl);padding:26px 28px;background:#fff;
+    display:flex;flex-direction:column}
+  .nx.lead-card{border:2px solid var(--pink);background:var(--pink-tint)}
+  .nx h4{font-size:23px;letter-spacing:-.5px;margin:0 0 8px}
+  .nx p{font-size:15.5px;line-height:1.6;color:var(--slate);margin:0 0 10px}
+  .nx .offer{border:1.5px dashed var(--pink-line);border-radius:var(--r-md);padding:15px 17px;
+    font-size:15px;line-height:1.6;color:var(--navy);background:#fff;margin:0 0 20px}
+  .nx .btn{margin-top:auto}
+
+  .report{background:var(--panel);border:1px solid var(--line);border-radius:18px;
+    padding:28px 30px;display:grid;grid-template-columns:1fr 150px;gap:26px;align-items:start;
+    margin-top:26px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+
+  @media(max-width:880px){
+    .card.s1{grid-template-columns:1fr} .s1-owl{display:none}
+    .cls-grid{grid-template-columns:1fr}
+    .op-dials{grid-template-columns:repeat(2,1fr)}
+    .nexts{grid-template-columns:1fr}
+    .report{grid-template-columns:1fr} .report img{display:none}
+    .rt-head{display:none}
+    .rt-row{grid-template-columns:1fr;gap:4px}
+    .rt-row .ow,.rt-row .ty,.rt-row .st{font-size:13.5px}
+  }
+  @media(max-width:640px){
+    .card.s1{padding:30px 18px 34px} .card.s1 h1{font-size:27px}
+    .op-top{grid-template-columns:1fr;justify-items:center;text-align:center}
+    .cols{grid-template-columns:1fr}
+  }</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <img src="/brand/logo.svg" alt="The Trademark Helpline" class="site-logo">
+  </div>
+
+  <div class="steps" id="stepper"></div>
+
+  <!-- STEP 1 -->
+  <section class="card s1" data-screen="search">
+    <div>
+      <div class="eyebrow" id="s1-eyebrow">Free trademark search</div>
+      <h1>What&rsquo;s the name you want to protect?</h1>
+      <p class="lead">Pop in your brand name and we&rsquo;ll check it against the UK register
+        straight away. No sign up, and nothing to pay.</p>
+      <input id="name" class="hero-in" type="text" autocomplete="off"
+             placeholder="Type your Trademark Name and click Search">
+      <p class="sub" id="s1-note" style="margin-top:14px">Just the name for now. We&rsquo;ll ask about
+        logos and taglines next.</p>
+      <!-- Quick mode only (change spec 22 Aug §5): scope notice BEFORE the
+           first submission, and the one-and-only link to the full flow. -->
+      <div class="hidden" id="s1-quick-scope" style="margin-top:14px;padding:12px 16px;
+           background:#f7f8fa;border:1px solid #e3e8ee;border-radius:10px;font-size:13.5px;
+           color:#33424f"><b>UK word/name search only.</b> This quick search checks a name
+        against the UK trademark register. It does not collect your logo or tagline, or
+        assess where else you trade.</div>
+      <div style="margin-top:26px">
+        <button class="btn primary" id="s1-go" onclick="go('marks')">Start my free trademark search</button>
+      </div>
+      <p class="sub hidden" id="s1-quick-link" style="margin-top:14px">Need a broader brand
+        review? <a href="https://www.thetrademarkhelpline.com/free-search/" style="color:var(--pink);font-weight:700">Use
+        our Free Trademark Search</a>.</p>
+    </div>
+    <img src="/brand/knowledge-centre-owl.png" alt="" class="ill s1-owl">
+  </section>
+
+  <!-- STEP 2 -->
+  <section class="card hidden" data-screen="marks">
+    <h1>What shall we search?</h1>
+    <p class="lead">Your name is in. Add a logo or tagline and we&rsquo;ll note them for
+      your Brand Audit &mdash; taglines are searched as words, logos are not.</p>
+
+    <div class="opt-list">
+
+      <!-- Name. Editable, and never assumed to be a word mark: people type a
+           tagline into the search box, realise what it is, and want to move it.
+           If this is left empty and a tagline is given, the tagline becomes the
+           thing we search. -->
+      <div class="opt-block on" id="tick-name">
+        <div class="opt-row" style="cursor:default;align-items:start">
+          <span class="tick">&#10003;</span>
+          <img src="/brand/eg-name.png" alt="McDonald's wordmark" class="eg">
+          <div>
+            <h4>Name <span>&mdash; for example &ldquo;McDonald&rsquo;s&rdquo;</span></h4>
+            <p class="sub" style="margin:4px 0 10px">The word itself, however it&rsquo;s written.
+              Not sure it&rsquo;s a name? Move it to Tagline below.</p>
+            <input id="word-mark" type="text" class="name-in" autocomplete="off"
+                   oninput="syncWordMark()" placeholder="Your name">
+          </div>
+        </div>
+      </div>
+
+      <div class="opt-block" id="tick-logo">
+        <button type="button" class="opt-row" onclick="toggleTick('logo')">
+          <span class="tick">&#10003;</span>
+          <img src="/brand/eg-logo.png" alt="Golden Arches logo" class="eg">
+          <span>
+            <h4>Logo <span>&mdash; for example the Golden Arches</span></h4>
+            <span class="sub">Recorded for your Brand Audit. Image comparison isn&rsquo;t
+              part of the free word search.</span>
+          </span>
+        </button>
+        <div class="opt-drawer hidden" id="logo-drawer">
+          <div class="drop" id="logo-drop">
+            <input type="file" id="logo-file" accept="image/*">
+            <div style="flex:1;min-width:240px">
+              <b>Drop your logo in, or choose a file</b>
+              <p class="sub" style="margin-top:4px">PNG, JPG or SVG. We only store it against
+                your enquiry.</p>
+            </div>
+          </div>
+          <button type="button" class="skip" onclick="logoLater(true)">Haven&rsquo;t got it to
+            hand &mdash; I&rsquo;ll send it later</button>
+          <div class="later hidden" id="logo-later-panel">
+            <span style="flex:1;min-width:240px">No problem &mdash; we&rsquo;ve noted that a logo
+              is coming and we&rsquo;ll ask for it when we pick this up.</span>
+            <button type="button" class="btn ghost sm" onclick="logoLater(false)">Upload it now
+              instead</button>
+          </div>
+          <input type="checkbox" id="logo-later" class="hidden">
+        </div>
+      </div>
+
+      <div class="opt-block" id="tick-tag">
+        <button type="button" class="opt-row" onclick="toggleTick('tag')">
+          <span class="tick">&#10003;</span>
+          <img src="/brand/eg-tagline.png" alt="I'm lovin' it tagline" class="eg">
+          <span>
+            <h4>Tagline <span>&mdash; for example &ldquo;I&rsquo;m Lovin&rsquo; It&rsquo;&rdquo;</span></h4>
+            <span class="sub">Searched as words, same as a name. How it&rsquo;s used and styled
+              is a Brand Audit question.</span>
+          </span>
+        </button>
+        <div class="opt-drawer hidden" id="tag-drawer">
+          <input id="tagline" type="text" style="max-width:460px"
+                 placeholder="Add your tagline here">
+        </div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="link" onclick="history.back()">&larr; Back</button>
+      <button class="btn primary" onclick="go('jurisdiction')">Continue</button>
+    </div>
+  </section>
+
+  <!-- STEP 4 — classes -->
+  <section class="card hidden" data-screen="classes">
+    <h1>What do you sell?</h1>
+    <p class="lead">Trade marks are registered against classes of goods and services. Pick the
+      ones you actually trade in &mdash; your registration only protects what you list.</p>
+
+    <div class="cls-grid">
+      <div>
+        <input class="cls-search" type="search" id="cls-search"
+               placeholder="Search classes&hellip;" oninput="renderClassList()">
+        <div class="listbox" id="cls-list"></div>
+      </div>
+      <div>
+        <div class="eyebrow">Your classes</div>
+        <div class="basket" id="cls-basket"></div>
+        <div class="panel-navy" style="margin-top:18px">
+          <img src="/brand/apple.png" alt="" style="width:60px;height:auto;flex:0 0 auto">
+          <div>
+            <div class="eyebrow">Worth knowing</div>
+            <p>Picking more classes isn&rsquo;t automatically better &mdash; each one costs, and
+              a class you don&rsquo;t trade in can be challenged. Pick what you sell today plus
+              what&rsquo;s genuinely next.</p>
+          </div>
+        </div>
+        <!-- Second search button, next to the basket rather than below the four
+             tools. Once a class is picked this is where the eye already is, and
+             the footer button can be a long scroll away past all four tools.
+             Hidden until there is something to search, so it never sits there
+             as a button that refuses to work. -->
+        <div class="go-here hidden" id="cls-go-top">
+          <button class="btn primary block" onclick="beginSearch()">Begin free search</button>
+          <p class="sub" id="cls-count-top"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="help-head">
+      <img src="/brand/owl-branch.png" alt="" class="ill" style="width:120px">
+      <div style="min-width:280px;flex:1">
+        <h2>Want some help picking your classes?</h2>
+        <p class="sub" style="font-size:15.5px">Try any of our four handy tools. Each one opens
+          right here &mdash; you won&rsquo;t lose your place.</p>
+      </div>
+    </div>
+
+    <div class="opt-list" id="help-panel" style="max-width:none;margin-top:22px">
+
+      <div class="opt-block tool" data-opt="5">
+        <button type="button" class="opt-row no-tile" onclick="openHelp('5')">
+          <span class="tick tool-n">1</span>
+          <span>
+            <span class="tool-h"><h4>Use an existing trademark</h4>
+              <span class="badge">Most accurate</span></span>
+            <span class="sub">A competitor&rsquo;s mark, or one of your own covering the same
+              goods and services. We borrow its classes and terms.</span>
+          </span>
+        </button>
+        <div class="opt-drawer" id="ho-5"></div>
+      </div>
+
+      <div class="opt-block tool" data-opt="3">
+        <button type="button" class="opt-row no-tile" onclick="openHelp('3')">
+          <span class="tick tool-n">2</span>
+          <span>
+            <span class="tool-h"><h4>Your company</h4>
+              <span class="badge">Companies House</span></span>
+            <span class="sub">Find your company and we&rsquo;ll read its SIC codes and map them
+              to classes. Nothing to type but your name.</span>
+          </span>
+        </button>
+        <div class="opt-drawer" id="ho-3"></div>
+      </div>
+
+      <div class="opt-block tool" data-opt="1">
+        <button type="button" class="opt-row no-tile" onclick="openHelp('1')">
+          <span class="tick tool-n">3</span>
+          <span>
+            <span class="tool-h"><h4>Describe your business</h4>
+              <span class="badge ai">AI</span></span>
+            <span class="sub">A few questions about what you do. The more detail you give,
+              the more accurate the answer.</span>
+          </span>
+        </button>
+        <div class="opt-drawer" id="ho-1"></div>
+      </div>
+
+      <div class="opt-block tool" data-opt="2">
+        <button type="button" class="opt-row no-tile" onclick="openHelp('2')">
+          <span class="tick tool-n">4</span>
+          <span>
+            <span class="tool-h"><h4>Your website</h4>
+              <span class="badge ai">AI</span></span>
+            <span class="sub">Only if your site has a real breakdown of what you offer. If
+              it&rsquo;s a landing page, use <b>Describe your business</b> &mdash; you&rsquo;ll
+              get a better answer.</span>
+          </span>
+        </button>
+        <div class="opt-drawer" id="ho-2"></div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="link" onclick="history.back()">&larr; Back</button>
+      <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+        <span class="sub" id="cls-count"></span>
+        <button class="btn primary" onclick="beginSearch()">Begin free search</button>
+      </div>
+    </div>
+    <div class="err hidden" id="cls-gate"></div>
+  </section>
+
+  <!-- CLASS BUILDER ONLY — review & send. The class tools' standalone exit
+       (Jonathan, 21 Aug): see classes + official descriptions + UKIPO terms,
+       amend anything, then Send — to the Deal's Classes & Terms when opened
+       from Zoho, or emailed as a CSV with a Class Tools lead created. -->
+  <section class="card hidden" data-screen="review">
+    <h1>Review your classes &amp; terms</h1>
+    <p class="lead">These are the official class descriptions and the specific terms drawn from
+      marks already registered at the UKIPO. Edit anything &mdash; remove classes, delete or
+      reword terms &mdash; then send. What you send is exactly what we file against.</p>
+    <div id="rv-list"></div>
+    <p style="margin:14px 0 26px"><button class="btn ghost" onclick="history.back()">+ Add or change classes</button></p>
+
+    <div id="rv-deal-send" class="hidden">
+      <button class="btn primary" onclick="sendToDeal()">Send to the Deal&rsquo;s Classes &amp; Terms</button>
+    </div>
+
+    <div id="rv-return-send" class="hidden">
+      <button class="btn primary" onclick="sendToCaller()">Use these classes &amp; terms</button>
+    </div>
+
+    <div id="rv-lead-send" class="hidden" style="max-width:560px">
+      <h2 style="font-size:20px">Email me my classes &amp; terms</h2>
+      <p class="sub">We&rsquo;ll send your selection as a spreadsheet (CSV) you can keep.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <input class="txt" id="rv-first" placeholder="First name *">
+        <input class="txt" id="rv-last" placeholder="Last name *">
+      </div>
+      <input class="txt" id="rv-email" type="email" placeholder="Email *" style="margin-top:10px">
+      <input class="txt" id="rv-phone" type="tel" placeholder="Mobile *" style="margin-top:10px">
+      <input class="txt" id="rv-company" placeholder="Company (optional)" style="margin-top:10px">
+      <p style="margin-top:14px"><button class="btn primary" onclick="sendClassTools()">Send my classes &amp; terms</button></p>
+    </div>
+
+    <div class="err hidden" id="rv-err"></div>
+    <div class="hidden" id="rv-done" style="margin-top:18px;padding:16px 18px;background:#eefbf2;border:1px solid #bfe8cc;border-radius:10px;font-weight:600"></div>
+    <div class="actions"><button class="link" onclick="history.back()">&larr; Back</button></div>
+  </section>
+
+  <!-- STEP 3 — jurisdictions -->
+  <section class="card hidden" data-screen="jurisdiction">
+    <h1>Where do you trade?</h1>
+    <p class="lead">Our free search covers the UK register. Telling us where you trade lets
+      us be straight with you about what falls outside it.</p>
+
+    <div class="juris-block">
+      <div class="jhead">
+        <img src="/brand/bus.png" alt="" style="height:62px;width:auto">
+        <h3>Where do you trade today?</h3>
+      </div>
+      <div class="seg">
+        <div class="opt on" id="now-uk" onclick="setMode('now','uk')">UK only</div>
+        <div class="opt" id="now-select" onclick="setMode('now','select')">Select countries</div>
+      </div>
+      <div id="pick-now"></div>
+      <div id="now-continue" style="margin-top:14px">
+        <button class="btn ghost" onclick="revealPlan()">Continue</button>
+      </div>
+    </div>
+
+    <div class="reveal hidden juris-block" id="plan-block">
+      <div class="jhead">
+        <img src="/brand/owl-globe.png" alt="" style="height:70px;width:auto">
+        <h3>And where do you plan to trade next?</h3>
+      </div>
+      <!-- "No plans" is the default and is navy rather than pink: it is a
+           perfectly good answer, not a lesser one. Choosing "further afield"
+           opens the list with today's countries already ticked for context —
+           planCodes() subtracts them, so only what you ADD counts as a plan. -->
+      <div class="pills" id="plan-seg" style="gap:12px">
+        <button type="button" class="pill navy lg on" data-plan="none"
+                onclick="setPlanMode('none')">No plans beyond where I am now</button>
+        <button type="button" class="pill lg" data-plan="select"
+                onclick="setPlanMode('select')">I&rsquo;m looking further afield</button>
+      </div>
+      <div id="pick-plan" class="hidden"></div>
+
+      <div class="panel eu-note">
+        <img src="/brand/europe.png" alt="" style="height:52px;width:auto">
+        <div style="min-width:260px;flex:1">
+          <b>One filing can cover the whole EU.</b>
+          <p class="sub" style="margin-top:4px">If several EU countries matter to you, an EU
+            trade mark is usually cheaper than filing in each one. We&rsquo;ll tell you if
+            that applies.</p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="link" onclick="history.back()">&larr; Back</button>
+        <button class="btn primary" onclick="go('classes')">Continue</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- RESULTS -->
+  <section class="card hidden" data-screen="results">
+    <h1 id="res-head">Here&rsquo;s what&rsquo;s on the register</h1>
+    <p class="lead" id="res-sub"></p>
+    <div class="disc hidden" id="res-stale">Your classes or jurisdictions have changed since
+      this search ran &mdash; go back and press &ldquo;Begin free search&rdquo; again to
+      refresh these results.</div>
+
+    <div class="summary" id="res-summary"></div>
+    <div class="riskbar" id="res-bar"></div>
+    <p class="sub" id="res-barnote" style="margin:0 0 32px"></p>
+
+    <h2 style="font-size:22px">The five closest live marks</h2>
+    <div class="restable">
+      <div class="rt-head">
+        <span>Risk</span><span>Mark</span><span>Owner</span><span>Type</span><span>Status</span>
+      </div>
+      <div id="res-rows"></div>
+    </div>
+
+    <!-- Change spec 22 Aug §6: the remaining flagged results are not missing —
+         they live in the full report, and the CTA says so explicitly. -->
+    <div id="res-fullreport" style="margin:18px 0 6px;padding:16px 20px;background:#f7f8fa;
+         border:1px solid #e3e8ee;border-radius:12px">
+      <p style="margin:0 0 12px;font-size:14.5px;color:#33424f">We&rsquo;ve shown the five
+        closest live marks here. Your <b>full report</b> contains all flagged results so you
+        can review the complete picture, including owners, status, classes, goods and services.</p>
+      <button class="btn primary" onclick="document.getElementById('report-form').scrollIntoView({behavior:'smooth',block:'center'})">Get my full trademark search report</button>
+      <p class="sub" style="font-size:13px;margin:8px 0 0">See and assess every result &mdash;
+        not just the five closest matches.</p>
+    </div>
+
+    <!-- OPINION — the viability read, ported from the Industry Report's
+         Tailored Report. Rendered from what the engine sent; never
+         recalculated here, so screen, email and CRM can't disagree. -->
+    <div class="opinion" id="res-opinion">
+      <div class="op-top">
+        <div class="op-master">
+          <div class="dial dial-master" id="op-dial"><span class="val" id="op-val">&mdash;</span><span class="cap">brand strength</span></div>
+          <p class="sub" id="op-cap" style="text-align:center;font-size:13.5px;margin-top:10px"></p>
+        </div>
+        <div class="op-say">
+          <div class="eyebrow">Our view</div>
+          <h2 id="op-headline"></h2>
+          <div id="op-body"></div>
+        </div>
+      </div>
+      <div class="op-dials" id="op-dials"></div>
+    </div>
+
+    <div id="res-disclaimers"></div>
+
+    <!-- RECOMMENDED NEXT STEPS — order adapts to what the search found -->
+    <h2 style="font-size:24px;margin-top:34px">Recommended next steps</h2>
+    <div class="nexts" id="res-nexts"></div>
+
+    <!-- soft lead capture — third option, never a gate -->
+    <div class="report" id="report-form">
+      <div>
+        <h2 style="font-size:24px">Want the full list emailed to you?</h2>
+        <p class="sub" style="font-size:15.5px;max-width:520px;margin-bottom:18px">We&rsquo;ll
+          send every result we found, with the owner, company status and the goods and services
+          each one covers.</p>
+        <div class="cols">
+          <div><label class="fld">First name</label><input id="r-first" type="text"></div>
+          <div><label class="fld">Last name</label><input id="r-last" type="text"></div>
+        </div>
+        <div class="cols">
+          <div><label class="fld">Email</label><input id="r-email" type="email" placeholder="you@business.com"></div>
+          <div><label class="fld">Phone</label><input id="r-phone" type="tel"></div>
+        </div>
+        <label class="fld">Business name <span class="opt">(optional)</span></label>
+        <input id="r-biz" type="text">
+        <div class="err hidden" id="r-err"></div>
+        <button class="btn primary block" style="margin-top:18px" onclick="sendReport()">Send my report</button>
+        <p class="sub" style="font-size:13.5px;margin-top:14px">We&rsquo;ll only use these
+          details to send your report and talk to you about your brand.</p>
+      </div>
+      <img src="/brand/news-bird.png" alt="" class="ill" style="width:100%;max-width:150px">
+    </div>
+
+    <div class="actions">
+      <button class="link" onclick="history.back()">&larr; Back to classes</button>
+      <button class="link pink" onclick="resetAll()">Start a new search</button>
+    </div>
+  </section>
+
+  <!-- PORTAL OFFER (after Send my report) -->
+  <section class="card hidden" data-screen="portal">
+    <h2>Your report is on its way 📧</h2>
+    <p class="lead" style="margin-bottom:10px">You don&rsquo;t have to wait for the email &mdash;
+      <a id="portal-report-link" href="#" target="_blank" rel="noopener"
+         style="color:var(--pink);font-weight:700">view and download your full report now</a>.</p>
+    <p class="lead">Before you go — create your free Temmy Portal login and get much more, at no cost.</p>
+    <ul class="benefits">
+      <li>Unlimited free searches</li>
+      <li>View and download all your reports in one convenient place</li>
+      <li>Your trademark portfolio in one view</li>
+      <li>Set up notifications so you never miss a deadline</li>
+      <li>Access to our free guides — and much more</li>
+    </ul>
+    <div class="portal-actions">
+      <button class="btn primary" onclick="createPortal()">Yes please — create my free login</button>
+      <button class="btn ghost" onclick="finish(false)">Just send my report</button>
+    </div>
+    <div class="actions"><button class="link" onclick="history.back()">← Back</button><span></span></div>
+  </section>
+
+  <!-- DONE -->
+  <section class="card hidden" data-screen="done">
+    <div class="done-mark">✓</div>
+    <h2 style="text-align:center" id="done-head">Report sent</h2>
+    <p class="lead" style="text-align:center" id="done-msg"></p>
+    <div style="text-align:center"><button class="btn primary" onclick="resetAll()">Start another search</button></div>
+    <div class="actions"><button class="link" onclick="history.back()">← Back</button><span></span></div>
+  </section>
+</div>
+
+<div class="mode-flag" id="modeflag"></div>
+
+<script>
+/* =======================================================================
+   CONFIG — the only line to change to go live.
+   API_BASE='' -> built-in MOCK (works instantly, offline).
+   API_BASE='https://<ref>.supabase.co/functions/v1/free-search' -> live.
+   ======================================================================= */
+const CONFIG = (function(){
+  // Embedded via /embed.js the tenant rides on the URL; standalone defaults tmh.
+  var q=new URLSearchParams(location.search);
+  return { API_BASE:'', TENANT_ID:(q.get('tenant')||'tmh'), EMBED:q.get('embed')==='1',
+    // Hand-off from the compact search-box widget (search-box.html), agreed
+    // 6 Aug 2026: it mints the session and logs the search term itself, then
+    // sends the visitor here to land on STEP 2 rather than re-typing the name.
+    //   s      = existing session_id to ADOPT (do not mint a second one)
+    //   screen = which step to open on ('marks' = step 2)
+    //   q      = the name, as a fallback for when /session/start was
+    //            unreachable and there is no session to read it from
+    // TWO bases, deliberately.
+    //
+    // SEARCH_BASE is the Supabase Edge Function — the ONLY route with the
+    // usage gate on it. API_BASE is the Render engine, which serves the
+    // widget itself plus classes, jurisdictions, lookups and the AI routes.
+    //
+    // Pointing everything at Supabase would 404: the Edge Function only
+    // implements /free-search and /free-search/account. Pointing the SEARCH
+    // at Render bypasses the gate entirely — which is the state today, and
+    // is why an anonymous visitor can currently run thirty searches.
+    //
+    // Empty SEARCH_BASE = same-origin = ungated. Set it at go-live.
+    SEARCH_BASE:q.get('searchbase')||'',
+    // 'fs' is the WordPress-safe alias for 's' (WP hijacks ?s= as site
+    // search, 404ing the page — found 21 Aug). Both accepted here.
+    RESUME_SESSION:q.get('s')||q.get('fs')||'', RESUME_SCREEN:q.get('screen')||'',
+    // Deal-scoped class builder (Jonathan, 21 Aug): opened from a Zoho
+    // Deal's "Build Classes & Terms" button with ?deal=<zoho deal id>.
+    // Every journey event then carries zoho_deal_id, which routes the
+    // completed search's classes & terms onto THAT Deal (and suppresses
+    // all lead creation server-side).
+    DEAL:q.get('deal')||'',
+    // "Return to caller" mode (27 Aug). The Brand Audit form embeds this
+    // builder per brand so the audit uses the SAME class tools and tiered
+    // terms as Free Search, instead of its own older picker. With ?return=1
+    // the review screen offers "Use these classes & terms", which posts the
+    // selection back to the host page and writes nothing to Zoho — the
+    // audit submits everything itself at the end.
+    RETURN:q.get('return')||'',
+    RESUME_NAME:q.get('q')||'',
+    // The journey Edge Function. Production default (param-overridable) —
+    // relative same-origin calls 404 on the Render engine, which had been
+    // silently costing us every page-initiated journey log.
+    JOURNEY:q.get('journey')||'https://jwanlhdmhgmbybcdhvkx.supabase.co/functions/v1/journey',
+    // Where the new standalone Brand Audit page lives — point this at wherever
+    // it's actually deployed (same open question as this page's own hosting).
+    // Repointed 27 Aug (Jonathan): the client-facing audit is now the
+    // 9-page checkout at /audit (audit-checkout.html), pre-populated from
+    // the journey session via ?s=. The multi-brand tool stays parked at
+    // /brand-audit for internal revival.
+    BRAND_AUDIT_URL:'/audit',
+    // "Proceed to application" — the other half of the recommended next
+    // steps. Repointed 26 Aug (Jonathan) from the generic enquiry form to
+    // the dedicated application page, which is the route the new Apply for
+    // Trademark flow will use once the Brand Audit is built. Both wizards
+    // read this one constant, so Free Search and Quick Search stay in step.
+    APPLY_URL:'https://www.thetrademarkhelpline.com/apply-for-trademark/' };
+})();
+// The `journey` Edge Function is a sibling of `free-search` (same Supabase
+// project) — swap the last path segment rather than needing a second config
+// line to keep in sync. Empty in the same-origin MOCK/dev mode as API_BASE.
+function journeyBase(){
+  if(CONFIG.JOURNEY) return CONFIG.JOURNEY.replace(/\/$/,'');
+  var b=(CONFIG.API_BASE||'').replace(/\/$/,'');
+  return b.replace(/\/free-search$/,'/journey');
+}
+
+/* Nice class short labels (full headings live in nice_classes.py) */
+const NICE={1:'Chemicals',2:'Paints & Coatings',3:'Cosmetics & Cleaning',4:'Oils, Lubricants & Fuels',
+ 5:'Pharmaceuticals',6:'Metal Products',7:'Machinery',8:'Hand Tools',9:'Electrical, Scientific & Computers',
+ 10:'Medical Apparatus',11:'Lighting, Heating & Sanitary',12:'Vehicles',13:'Firearms & Fireworks',
+ 14:'Jewellery & Watches',15:'Musical Instruments',16:'Paper & Stationery',17:'Rubber & Plastics',
+ 18:'Leather & Luggage',19:'Building Materials (non-metal)',20:'Furniture',21:'Household & Kitchen Utensils',
+ 22:'Ropes, Nets & Tents',23:'Yarns & Threads',24:'Textiles & Linen',25:'Clothing, Footwear & Headwear',
+ 26:'Lace, Ribbons & Haberdashery',27:'Carpets & Floor Coverings',28:'Games, Toys & Sporting Goods',
+ 29:'Meat, Fish & Dairy',30:'Coffee, Bakery & Staple Foods',31:'Agriculture & Live Animals',
+ 32:'Beers & Soft Drinks',33:'Alcoholic Beverages',34:'Tobacco & Smokers’ Articles',35:'Advertising & Business',
+ 36:'Financial & Insurance',37:'Construction & Repair',38:'Telecommunications',39:'Transport & Storage',
+ 40:'Treatment of Materials',41:'Education & Entertainment',42:'Science & Technology (IT)',
+ 43:'Food & Drink Services',44:'Medical & Beauty Services',45:'Legal & Security Services'};
+
+/* Jurisdiction picker (mirrors jurisdictions_data.picker_payload) */
+/* The jurisdiction picker data.
+   This is a FALLBACK ONLY — 20 countries so the page still works if the
+   engine is unreachable. The real list (159 territories) is fetched from
+   GET /jurisdictions on load and replaces this wholesale.
+
+   Until 18 Aug 2026 the fetch did not exist, so the wizard silently ran on
+   these 20 forever. That is the actual reason countries looked "missing":
+   the back end had them all along, the browser was never asking. Whoever
+   edits this next — do not add countries here. Add them to the canonical
+   list in deploy-v2-hotfix/jurisdictions.py, which both this and the audit
+   tool read. */
+let PICKER={
+  popular:[{code:'GB',label:'United Kingdom'},{code:'EU',label:'European Union',covers:'27 countries'},
+    {code:'US',label:'United States',covers:'all 50 states'},{code:'CA',label:'Canada'},
+    {code:'AU',label:'Australia'},
+    {code:'NZ',label:'New Zealand'},{code:'AE',label:'Dubai / UAE'},{code:'SG',label:'Singapore'},
+    {code:'SA',label:'Saudi Arabia'}],
+  regions:[{code:'BX',label:'Benelux'},
+    {code:'ARIPO',label:'ARIPO (Africa)'},{code:'OAPI',label:'OAPI (Africa)'}],
+  all_countries:[{code:'AF',label:'Afghanistan'},{code:'AR',label:'Argentina'},{code:'BR',label:'Brazil'},
+    {code:'CA',label:'Canada'},{code:'CN',label:'China'},{code:'FR',label:'France'},{code:'DE',label:'Germany'},
+    {code:'IN',label:'India'},{code:'IE',label:'Ireland'},{code:'IT',label:'Italy'},{code:'JP',label:'Japan'},
+    {code:'MX',label:'Mexico'},{code:'NL',label:'Netherlands'},{code:'ZA',label:'South Africa'},
+    {code:'KR',label:'South Korea'},{code:'ES',label:'Spain'},{code:'SE',label:'Sweden'},
+    {code:'CH',label:'Switzerland'},{code:'TR',label:'Turkey'},{code:'US',label:'United States'}]};
+
+/* Pull the real list. Fire-and-forget: if it fails the fallback above stands
+   and the wizard still works, just with fewer countries. Any picker already
+   on screen is repainted once the real data lands. */
+(function loadPicker(){
+  const base=(CONFIG.API_BASE||'').replace(/\/$/,'');
+  fetch(base+'/jurisdictions').then(r=>r.json()).then(function(d){
+    if(!d || !d.ok || !d.picker || !(d.picker.all_countries||[]).length) return;
+    PICKER=d.picker;
+    ['now','plan'].forEach(function(w){
+      const host=document.getElementById(w==='now'?'pick-now':'pick-plan');
+      if(host && host.dataset.built){ renderJQuick(w); renderJList(w); renderJBasket(w); }
+    });
+  }).catch(function(){});
+})();
+
+/* QUICK MODE (Jonathan, 20 Aug) — /uk-trademark-quick-search serves this
+   SAME file (one file, two routes, zero drift). Quick is Name -> Classes ->
+   Results: it skips the Searches screen (the typed name IS the word mark;
+   no logo/tagline collection) and Jurisdictions (defaults stand: trading
+   now = UK, no expansion plans). The session carries source
+   'quick_search', which Zoho maps to Lead Source "Quick Search". */
+const QUICK=/uk-trademark-quick-search/.test(location.pathname);
+if(QUICK) document.title='UK Trademark Quick Search \u2014 The Trademark Helpline';
+/* Standalone Class Builder (Jonathan, 21 Aug): the class tools were built
+   to feed "Begin search" \u2014 the builder gives them a different exit: see the
+   classes, official descriptions and UKIPO terms, AMEND them, then SEND.
+   From a Zoho Deal (?deal=) Send writes to that Deal's Classes & Terms; on
+   the public site Send takes contact details, creates a Class Tools lead
+   and emails the visitor their selection as a CSV. */
+const BUILDER=/class-builder/.test(location.pathname);
+if(BUILDER) document.title='Trademark Class Builder \u2014 The Trademark Helpline';
+/* Quick-mode step-1 copy (change spec 22 Aug \u00a75): never promise logo or
+   tagline collection, surface the UK word/name-only scope BEFORE the first
+   submission, and link to the full flow here and ONLY here. */
+if(QUICK){
+  var _e=document.getElementById('s1-eyebrow'); if(_e)_e.textContent='Quick UK Trademark Search';
+  var _n=document.getElementById('s1-note');
+  if(_n)_n.textContent='Enter the word or name you want to check. This Quick Search does not assess logo similarity.';
+  var _sc=document.getElementById('s1-quick-scope'); if(_sc)_sc.classList.remove('hidden');
+  var _lk=document.getElementById('s1-quick-link'); if(_lk)_lk.classList.remove('hidden');
+  var _b=document.getElementById('s1-go'); if(_b)_b.textContent='Start quick UK search';
+}
+if(BUILDER){
+  var _n2=document.getElementById('s1-note');
+  if(_n2)_n2.textContent='Enter the brand name these classes and terms are for.';
+  var _b2=document.getElementById('s1-go'); if(_b2)_b2.textContent='Choose my classes';
+  var _e2=document.getElementById('s1-eyebrow'); if(_e2)_e2.textContent='Trademark Class Builder';
+}
+/* Embedded on the WordPress site the whole wizard lives in an iframe that
+   embed.js resizes from brauditHeight messages (same contract as the compact
+   search box). Screens vary from ~600px to 2000+px, so report continuously. */
+(function reportHeight(){
+  if(window.parent===window) return;          // standalone: nothing to do
+  var last=0;
+  function send(){
+    var h=Math.ceil(document.documentElement.scrollHeight)+8;
+    if(Math.abs(h-last)<4) return; last=h;
+    try{ window.parent.postMessage({brauditHeight:h},'*'); }catch(e){}
+  }
+  new MutationObserver(send).observe(document.documentElement,
+    {childList:true,subtree:true,attributes:true});
+  window.addEventListener('load',send); window.addEventListener('resize',send);
+  setInterval(send,800);                      // belt and braces for animations
+  // Explicit ready signal for the host page's loading panel (change spec
+  // 22 Aug §3) — sent as soon as the script is running, alongside heights.
+  try{ window.parent.postMessage({brauditReady:true},'*'); }catch(e){}
+})();
+const STEP_ORDER=BUILDER?['search','classes','review']
+                :QUICK?['search','classes','results']
+                      :['search','marks','jurisdiction','classes','results'];
+const STEP_LABELS={search:'Name',marks:'Searches',jurisdiction:'Jurisdictions',classes:'Classes',results:'Results',review:'Review & Send'};
+let state={name:'',logo:false,logoLater:false,tagline:'',classes:[],
+  now:{mode:'uk',codes:[]},plan:{mode:'none',codes:[]},lastResult:null,lead:null,
+  emailForAI:null,classSource:null,resultsComputedFrom:null,portalRequested:false,
+  sessionId:null,businessWebsite:'',channels:null,email:'',emailSource:''};  // minted on the first real decision — see ensureSession()
+
+/* ── Navigation ──────────────────────────────────────────────────────────
+   Two layers, deliberately kept separate:
+   - screen(id)        pure DOM show/hide — no history, no side effects.
+   - pushScreen(id)     the only thing that should ever move the visitor
+                        forward: records a real history entry (so the
+                        browser's own Back/Forward buttons and mobile
+                        swipe-back work), then shows the screen.
+   Back links call history.back() instead of pushScreen() to a hardcoded
+   target — that keeps the browser's history stack and this app's idea of
+   "where you are" as the SAME stack, so native Back and our own "← Back"
+   links can never disagree or leave the visitor stranded.
+   Every screen in this file already keeps its own DOM in sync reactively
+   (addClass/removeClass/setMode/tog all re-render their own bit of UI the
+   moment state changes) — nothing here needs to force a full screen
+   rebuild on re-entry EXCEPT "results", which is only ever populated by
+   beginSearch() and needs a staleness check if the visitor went back,
+   changed classes/jurisdiction, then came forward again without pressing
+   "Begin Free Search" (by design we never silently re-run the search on a
+   bare forward-navigation — see syncResultsStaleness()).
+   When the Brand Audit flow gets built as further screens in this same
+   state machine, it should use these same three primitives rather than
+   inventing its own — that's what makes "back and forth" free for it too.
+*/
+function screen(id){document.querySelectorAll('[data-screen]').forEach(s=>s.classList.add('hidden'));
+  const el=document.querySelector(`[data-screen="${id}"]`);if(el)el.classList.remove('hidden');
+  renderStepper(id);window.scrollTo({top:0,behavior:'smooth'});
+  // Embedded: the iframe cannot scroll itself (it is content-height), so a
+  // screen change must ask the PARENT page to bring the widget's top back
+  // into view — otherwise the visitor lands mid-screen after every step.
+  if(window!==window.parent){
+    try{ window.parent.postMessage({brauditScrollTop:true},'*'); }catch(e){}
+  }}
+function pushScreen(id){history.pushState({screen:id},'','#'+id);renderScreen(id);}
+function renderScreen(id){
+  if(id==='results'){
+    if(!state.lastResult){ id='search'; history.replaceState({screen:'search'},'','#search'); }
+    else { syncResultsStaleness(); }
+  }
+  screen(id);
+}
+function snapshotInputs(){return JSON.stringify({classes:state.classes,now:state.now,plan:state.plan});}
+function syncResultsStaleness(){
+  const stale=state.resultsComputedFrom && state.resultsComputedFrom!==snapshotInputs();
+  const el=document.getElementById('res-stale'); if(el)el.classList.toggle('hidden',!stale);
+}
+
+/* ── Journey logging ─────────────────────────────────────────────────────
+   "Free trademark search must record data input" (Jonathan, 01 Aug 2026):
+   every real step/decision is logged server-side as it happens, not just
+   at a final submit — so an abandoned session still leaves a record, and
+   Brand Audit has something to pre-fill from if the visitor continues.
+   Fire-and-forget, same pattern as report.js's lead() — never blocks or
+   breaks the UI if the journey function is unreachable (matches the MOCK/
+   dev-mode fallback already used for search/lookup calls on this page). */
+function currentSnapshot(){
+  return {name:state.name,
+    tagline:document.getElementById('tagline')?document.getElementById('tagline').value.trim():state.tagline,
+    has_logo:state.logo&&!state.logoLater, classes:state.classes,
+    trading_now:nowCodes(), planning_to_trade:planCodes(), class_source:state.classSource,
+    business_website:state.businessWebsite||'',
+    // Whatever email we hold, and how we came by it.
+    email:state.email||'', email_source:state.emailSource||'',
+    // Where they sell and where they're seen — on the session in their own
+    // right, not buried in class_source, so Zoho and the Brand Audit get them
+    // whether or not the visitor used the describe-your-business route.
+    channels:state.channels||null};
+}
+function ensureSession(){
+  // Idempotent — call it any time; only the first call actually mints one.
+  // A blank visit that never gets this far never creates a row (migration
+  // 0002: "created on first real decision, not on page load").
+  if(state.sessionId) return Promise.resolve(state.sessionId);
+  if(state._sessionStarting) return state._sessionStarting;
+  state._sessionStarting=fetch(journeyBase()+'/session/start',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({tenant_id:CONFIG.TENANT_ID,
+      source:BUILDER?'class_tools':(QUICK?'quick_search':'free_search'),name:state.name})})
+    .then(r=>r.json()).then(d=>{
+      if(d&&d.ok&&d.session_id){ state.sessionId=d.session_id; }
+      return state.sessionId;
+    }).catch(()=>null);
+  return state._sessionStarting;
+}
+// "Request a Brand Audit" is available straight from Results — no email
+// gate. Carries whatever's known (name, classes, jurisdictions, and contact
+// details if "Send my report" was already used) via session_id; Brand Audit
+// fetches the snapshot itself and pre-fills, fully editable, from there.
+function goToBrandAudit(){
+  const url=CONFIG.BRAND_AUDIT_URL+(state.sessionId?('?s='+encodeURIComponent(state.sessionId)):'');
+  // The page is about to navigate away, so use sendBeacon (survives unload)
+  // rather than a normal fetch for this specific, last call.
+  if(state.sessionId && navigator.sendBeacon){
+    try{
+      const body=JSON.stringify({session_id:state.sessionId,event_type:'brand_audit_handoff',
+        screen:'results',payload:{}});
+      navigator.sendBeacon(journeyBase()+'/session/event', new Blob([body],{type:'application/json'}));
+    }catch(e){}
+  }
+  location.href=url;
+}
+function logEvent(type,screen,payload,includeSnapshot){
+  payload = payload||{};
+  if(CONFIG.DEAL) payload.zoho_deal_id = CONFIG.DEAL;
+  ensureSession().then(function(id){
+    if(!id) return; // dev/mock mode or the function is unreachable — never block the UI over it
+    try{
+      fetch(journeyBase()+'/session/event',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({session_id:id, event_type:type, screen:screen||null,
+          payload:payload||{}, snapshot: includeSnapshot?currentSnapshot():null}),
+        keepalive:true}).catch(()=>{});
+    }catch(e){}
+  });
+}
+function renderStepper(cur){
+  const map={results:'results',portal:'results',done:'results'};
+  const base=map[cur]||cur;const idx=STEP_ORDER.indexOf(base);
+  // Named steps, not a counter: a 4px rounded rule over an uppercase label.
+  // done = navy, current = pink, future = --line-soft with a muted label.
+  document.getElementById('stepper').innerHTML=STEP_ORDER.map((s,i)=>{
+    const cls=i<idx?'done':(i===idx?'now':'');
+    return `<div class="${cls}"><i></i><b>${i+1}. ${STEP_LABELS[s]}</b></div>`;}).join('');
+}
+/* ---- class-help panel (routes 2a–2e) ---- */
+/* The four tools are always on the page now — they used to hide behind an
+   "I want some help" button, which meant the people most likely to need them
+   never saw them. toggleHelp is kept so older callers don't break. */
+function toggleHelp(show){
+  const el=document.getElementById('help-panel');
+  if(show&&el) el.scrollIntoView({behavior:'smooth'});
+}
+function openHelp(opt){
+  document.querySelectorAll('.opt-block.tool').forEach(o=>o.classList.toggle('on',o.dataset.opt===opt));
+  const body=document.getElementById('ho-'+opt);
+  if(body.dataset.built){return;} body.dataset.built='1';
+  if(opt==='5') body.innerHTML=`
+    <div class="seg" style="margin-bottom:10px">
+      <div class="opt on" id="ho5-mode-tm" onclick="ho5Mode('tm')" style="padding:8px 14px;font-size:13px">By trademark</div>
+      <div class="opt" id="ho5-mode-owner" onclick="ho5Mode('owner')" style="padding:8px 14px;font-size:13px">By company / owner</div>
+    </div>
+    <div class="hbar"><input id="ho5-q" placeholder="Trademark name or number" oninput="ho5Search()"></div>
+    <div class="hres hidden" id="ho5-res"></div>`;
+  else if(opt==='3') body.innerHTML=`
+    <div class="hbar"><input id="ho3-q" placeholder="Company name or number" oninput="ho3coSearch()"></div>
+    <div class="hres hidden" id="ho3-res"></div>
+    <div class="muted-note" id="ho3-out"></div>`;
+  else body.innerHTML=aiGateHtml(opt);
+}
+function aiGateHtml(opt){
+  /* Change spec 22 Aug §8: the description or website comes FIRST. The email
+     is requested just-in-time, with an honest explanation, immediately
+     before the AI runs — see aiEmailGate(). No "unlock step 2", no
+     "no obligation" framing. */
+  const ph={1:'Describe what your business does — the more detail the better',
+            2:'https://your-website.com'}[opt];
+  return aiInputHtml(opt,ph);
+}
+/* The just-in-time email notice (spec §8, required copy verbatim). Renders
+   inline where the visitor is working; on a valid email it captures the
+   address (session + Zoho via the ai_gate source) and immediately continues
+   with the AI run it interrupted. */
+function aiEmailGate(opt, cont){
+  const out=document.getElementById('ho'+(opt==='1'?'1':'2')+'-out')
+        || document.getElementById('ho1-out');
+  if(!out){ cont(); return; }
+  const old=document.getElementById('ai-email-gate'); if(old) old.remove();
+  const g=document.createElement('div');
+  g.id='ai-email-gate'; g.className='gate-note'; g.style.marginTop='10px';
+  g.innerHTML='<b>Enter your email to run the AI class search</b><br>'+
+    'We use your email to prevent repeated anonymous use of our AI tools, create or '+
+    'update your trademark enquiry record, and send your results. We may contact you '+
+    'about this trademark enquiry. When the TMH Portal launches, registered users will '+
+    'be able to access the full range of free search tools from their account. '+
+    '<a href="https://www.thetrademarkhelpline.com/privacy-policy/" target="_blank" rel="noopener" '+
+    'style="color:var(--pink);font-weight:700">Privacy Policy</a>'+
+    '<div class="hbar" style="margin-top:10px">'+
+    '<input id="ai-gate-email" type="email" autocomplete="email" placeholder="you@business.com">'+
+    '<button class="btn primary" id="ai-gate-go">Run my AI class search</button></div>'+
+    '<div class="err hidden" id="ai-gate-err" style="margin-top:8px"></div>';
+  out.parentNode.insertBefore(g, out);
+  try{ g.scrollIntoView({behavior:'smooth',block:'center'}); }catch(e){}
+  document.getElementById('ai-gate-go').addEventListener('click', function(){
+    const e=(document.getElementById('ai-gate-email').value||'').trim();
+    const err=document.getElementById('ai-gate-err');
+    if(!/.+@.+\..+/.test(e)){ err.textContent='Please enter a valid email address.';
+      err.classList.remove('hidden'); return; }
+    err.classList.add('hidden');
+    state.emailForAI=e; state.email=e; state.emailSource='ai_gate';
+    logEvent('email_captured','classes',{source:'ai_gate'},true);
+    g.remove();
+    cont();
+  });
+}
+/* Server-side AI allowance (spec §9 interim restriction): every AI run is
+   checked against the journey's per-email allowance and recorded there —
+   deleting cookies doesn't reset it. Fail-open: if the journey can't be
+   reached the tool still runs; a lost usage record beats a dead tool. */
+function aiUse(tool, outEl, cont){
+  const email=state.emailForAI||state.email||'';
+  if(!email){ cont(); return; }
+  ensureSession().then(function(id){
+    return fetch(journeyBase()+'/ai/use',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:id||null,email:email,tool:tool,
+                           tenant_id:CONFIG.TENANT_ID})});
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if(d && d.ok && d.allowed===false){
+      if(outEl){ outEl.innerHTML='<b>'+esc(d.message||
+        'You have used your free AI class searches for now — call us on 0161 833 5400.')+'</b>'; }
+      logEvent('ai_allowance_exhausted','classes',{tool:tool},false);
+      return;
+    }
+    cont();
+  }).catch(function(){ cont(); });
+}
+/* The guided questions carry fixed element ids, and TWO routes render them —
+   "Describe your business" directly, and "Your website" after it has read the
+   site. Two copies in one document means getElementById returns whichever
+   comes first, so the website route would quietly drive the other route's
+   form. Only one copy may exist at a time; this drops the other. */
+function q1Claim(owner){
+  ['ho-1','ho-2'].forEach(function(id){
+    if(id===owner) return;
+    const el=document.getElementById(id);
+    if(el && el.querySelector('#q1-pitch')) el.innerHTML='';
+  });
+}
+function aiInputHtml(opt,ph){
+  if(opt==='1'){ q1Claim('ho-1'); setTimeout(q1Wire,0); return q1Html(); }
+  const multi = opt==='1';
+  const label = {1:'Step 2 — describe your business in your own words:',
+                 2:'Step 2 — your website address:'}[opt];
+  return `<div class="gate-note"><b>${label}</b><br>We\u2019ll process this with AI and include the suggested classes in your report to ${state.emailForAI}.</div>
+    ${multi?`<textarea id="ho${opt}-in" style="width:100%;margin-top:8px;min-height:70px" placeholder="${ph}"></textarea>`
+           :`<div class="hbar" style="margin-top:8px"><input id="ho${opt}-in" type="url" inputmode="url" autocomplete="url" placeholder="${ph}"></div>`}
+    <button class="btn ghost" style="margin-top:8px" onclick="${opt==='2'?'readWebsite()':`aiSubmit('${opt}')`}">${opt==='2'?'Read my website':'Add to my report'}</button>
+    <div class="muted-note" id="ho${opt}-out"></div>`;
+}
+/* ── Guided business description (route 1) ───────────────────────────────
+   Jonathan, 10 Aug 2026. Replaces a single free-text box with a short set
+   of questions, rendered as ONE scrolling form rather than a step-by-step
+   wizard — explicitly so the visitor can see at a glance that it's short and
+   doesn't leave the page. A wizard inside a wizard feels longer than it is.
+
+   The goods-vs-services question is the important one: Nice classification
+   splits at exactly that line (classes 1-34 goods, 35-45 services), so
+   answering it halves the search space and heads off the commonest error,
+   which is filing for goods when you actually provide services. The help
+   line under it is not decoration — plenty of people don't know the
+   distinction, and a confident wrong answer is worse than no answer.
+
+   The "new or existing brand" pair sits at the end under its own heading
+   because it is NOT about classification — it's prior use, and it's the
+   best lead-qualification signal here: an established brand trading for
+   years unregistered is a hotter, more urgent lead than a startup. */
+const Q1 = {mode:'', dur:'', web:''};
+function q1Html(){
+  return `
+  <div class="gate-note" style="margin-bottom:12px"><b>A few quick questions</b><br>
+    The more we know, the better the class suggestions. Nothing here is compulsory
+    except the first one — it takes about a minute.</div>
+
+  <div class="q">
+    <p class="qt">If somebody asked what your business does, what’s the first thing you’d say?</p>
+    <input type="text" id="q1-pitch" autocomplete="off" placeholder="e.g. We roast and sell speciality coffee">
+  </div>
+
+  <div class="q">
+    <p class="qt">Do you provide…</p>
+    <p class="qh">Goods are things you make or sell. Services are things you do for people.</p>
+    <div class="qseg" id="q1-mode">
+      <button type="button" data-m="goods">Goods or products</button>
+      <button type="button" data-m="services">Services</button>
+      <button type="button" data-m="both">Both</button>
+    </div>
+  </div>
+
+  <div class="q hidden" id="q1-goods-wrap">
+    <p class="qt">What goods or products do you provide?</p>
+    <textarea id="q1-goods" placeholder="e.g. roasted coffee beans, ground coffee, reusable cups"></textarea>
+  </div>
+
+  <div class="q hidden" id="q1-services-wrap">
+    <p class="qt">What services do you provide?</p>
+    <textarea id="q1-services" placeholder="e.g. barista training, coffee subscriptions, wholesale supply"></textarea>
+  </div>
+
+  <div class="q">
+    <p class="qt">Where do people buy from you?</p>
+    <p class="qh">Tick anything that applies now, or that you’re planning. Where you
+      sell can be a class in its own right — a shop that sells other brands’
+      products needs retail services, on top of whatever it makes.</p>
+    <div class="qchecks" id="q1-sell">
+      <label><input type="checkbox" value="premises"> A shop, office or premises people visit</label>
+      <label><input type="checkbox" value="own_site"> Your own website</label>
+      <label><input type="checkbox" value="marketplace"> Online marketplaces (eBay, Amazon, Etsy, TikTok Shop)</label>
+      <label><input type="checkbox" value="enquiry"> Through an enquiry, then we invoice</label>
+      <label><input type="checkbox" value="wholesale"> Wholesale or trade customers</label>
+      <label><input type="checkbox" value="other_sell"> Somewhere else</label>
+    </div>
+    <input type="text" id="q1-sell-other" class="hidden" style="margin-top:8px"
+           placeholder="Where else do people buy from you?">
+  </div>
+
+  <div class="q hidden" id="q1-resale-wrap">
+    <p class="qt">Do you sell other brands’ products as well as your own?</p>
+    <p class="qh">This is the one that decides whether you need retail services. Selling
+      only what you make usually doesn’t.</p>
+    <div class="qseg" id="q1-resale">
+      <button type="button" data-r="own">Only our own</button>
+      <button type="button" data-r="others">Other brands too</button>
+      <button type="button" data-r="mostly_others">Mostly other brands</button>
+    </div>
+  </div>
+
+  <div class="q">
+    <p class="qt">Where do people come across your brand? <span class="opt">— optional</span></p>
+    <p class="qh">This doesn’t change your classes — it tells us where to look if you
+      go on to a Brand Audit, and where your evidence of use lives.</p>
+    <div class="qchecks" id="q1-seen">
+      <label><input type="checkbox" value="search"> Search engines (Google, Bing)</label>
+      <label><input type="checkbox" value="ai"> AI search (ChatGPT, Claude, Gemini)</label>
+      <label><input type="checkbox" value="social"> Social media (Instagram, Facebook, LinkedIn, TikTok, X)</label>
+      <label><input type="checkbox" value="footfall"> Passing trade and word of mouth</label>
+      <label><input type="checkbox" value="traditional"> Traditional advertising (press, billboards, PR)</label>
+      <label><input type="checkbox" value="other_seen"> Somewhere else</label>
+    </div>
+    <input type="text" id="q1-seen-other" class="hidden" style="margin-top:8px"
+           placeholder="Where else do people come across you?">
+  </div>
+
+  <div class="q">
+    <p class="qt">Anything unique we’ve missed? <span class="opt">— optional</span></p>
+    <textarea id="q1-unique" placeholder="Anything that sets you apart, or that the questions above don’t cover"></textarea>
+  </div>
+
+  <div class="qsep">
+    <div class="st">A couple of things about your situation</div>
+    <div class="q">
+      <p class="qt">Is this trademark for a new brand or one you already use?</p>
+      <div class="qseg" id="q1-age">
+        <button type="button" data-a="new">A new brand</button>
+        <button type="button" data-a="existing">An existing brand</button>
+      </div>
+    </div>
+    <div class="q hidden" id="q1-dur-wrap">
+      <p class="qt">Roughly how long has it been in use publicly?</p>
+      <div class="qseg" id="q1-dur">
+        <button type="button" data-d="under1">Under a year</button>
+        <button type="button" data-d="1to3">1–3 years</button>
+        <button type="button" data-d="3to5">3–5 years</button>
+        <button type="button" data-d="5plus">5+ years</button>
+      </div>
+    </div>
+    <div class="q">
+      <p class="qt">Add a website to help our research?</p>
+      <div class="qseg" id="q1-web">
+        <button type="button" data-w="yes">Yes</button>
+        <button type="button" data-w="no">No</button>
+      </div>
+    </div>
+    <div class="q hidden" id="q1-web-wrap">
+      <p class="qt">Your website</p>
+      <input type="url" id="q1-website" inputmode="url" autocomplete="url" placeholder="https://yourbusiness.com">
+    </div>
+  </div>
+
+  <button class="btn primary" onclick="q1Submit()">Find my classes with AI</button>
+  <div class="muted-note" id="ho1-out"></div>`;
+}
+function q1Seg(groupId,attr,val,key){
+  const g=document.getElementById(groupId); if(!g) return;
+  g.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset[attr]===val));
+  Q1[key]=val;
+}
+function q1Wire(){
+  const mode=document.getElementById('q1-mode');
+  if(mode) mode.addEventListener('click',e=>{const b=e.target.closest('button'); if(!b)return;
+    q1Seg('q1-mode','m',b.dataset.m,'mode');
+    document.getElementById('q1-goods-wrap').classList.toggle('hidden',!(b.dataset.m==='goods'||b.dataset.m==='both'));
+    document.getElementById('q1-services-wrap').classList.toggle('hidden',!(b.dataset.m==='services'||b.dataset.m==='both'));
+  });
+  const age=document.getElementById('q1-age');
+  if(age) age.addEventListener('click',e=>{const b=e.target.closest('button'); if(!b)return;
+    age.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    Q1.age=b.dataset.a;
+    document.getElementById('q1-dur-wrap').classList.toggle('hidden',b.dataset.a!=='existing');
+  });
+  const dur=document.getElementById('q1-dur');
+  if(dur) dur.addEventListener('click',e=>{const b=e.target.closest('button'); if(!b)return;
+    q1Seg('q1-dur','d',b.dataset.d,'dur'); });
+
+  // Selling channels. Ticking a channel where GOODS change hands opens the
+  // resale question, because that — not the channel — is what decides whether
+  // retail services in class 35 belong on the specification.
+  const sell=document.getElementById('q1-sell');
+  if(sell) sell.addEventListener('change',function(){
+    const on=[...sell.querySelectorAll('input:checked')].map(c=>c.value);
+    document.getElementById('q1-sell-other').classList.toggle('hidden',!on.includes('other_sell'));
+    const sellsGoods=['premises','own_site','marketplace','wholesale'].some(v=>on.includes(v));
+    document.getElementById('q1-resale-wrap').classList.toggle('hidden',!sellsGoods);
+    if(!sellsGoods) Q1.resale='';
+  });
+  const resale=document.getElementById('q1-resale');
+  if(resale) resale.addEventListener('click',e=>{const b=e.target.closest('button'); if(!b)return;
+    resale.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+    Q1.resale=b.dataset.r; });
+  const seen=document.getElementById('q1-seen');
+  if(seen) seen.addEventListener('change',function(){
+    const on=[...seen.querySelectorAll('input:checked')].map(c=>c.value);
+    document.getElementById('q1-seen-other').classList.toggle('hidden',!on.includes('other_seen'));
+  });
+  const web=document.getElementById('q1-web');
+  if(web) web.addEventListener('click',e=>{const b=e.target.closest('button'); if(!b)return;
+    q1Seg('q1-web','w',b.dataset.w,'web');
+    document.getElementById('q1-web-wrap').classList.toggle('hidden',b.dataset.w!=='yes'); });
+}
+const DUR_LABEL={under1:'under a year','1to3':'1–3 years','3to5':'3–5 years','5plus':'5+ years'};
+function q1Submit(){
+  const v=id=>{const e=document.getElementById(id); return e?(e.value||'').trim():'';};
+  const pitch=v('q1-pitch'), goods=v('q1-goods'), services=v('q1-services'),
+        uniq=v('q1-unique'), site=v('q1-website');
+  const out=document.getElementById('ho1-out');
+  if(!pitch){ document.getElementById('q1-pitch').focus();
+    out.textContent='Please answer the first question so we know what to look for.'; return; }
+  if(Q1.web==='yes' && site && !/^(https?:\/\/)?[\w.-]+\.[a-z]{2,}([\/#?].*)?$/i.test(site)){
+    out.textContent='That doesn’t look like a website address — e.g. yourbusiness.co.uk'; return; }
+  // Spec §8 sequence: the description came first; ask for the email
+  // just-in-time, then this function re-runs and the AI executes at once.
+  if(!state.emailForAI){ aiEmailGate('1', q1Submit); return; }
+
+  const ticked=id=>[...document.querySelectorAll('#'+id+' input:checked')].map(c=>c.value);
+  const sell=ticked('q1-sell'), seen=ticked('q1-seen');
+  const sellOther=v('q1-sell-other'), seenOther=v('q1-seen-other');
+
+  // A composed sentence, because the enrichment relay and the AI class
+  // suggestion both read class_source.value as free text. The structured
+  // answers ride alongside; this keeps every existing consumer working.
+  const parts=[pitch];
+  if(goods) parts.push('Goods/products: '+goods);
+  if(services) parts.push('Services: '+services);
+  if(uniq) parts.push('Also: '+uniq);
+
+  // WHERE THEY SELL goes into the sentence, phrased as trade fact.
+  //
+  // This is what stops a phone shop being classed as 9 and 38 while missing
+  // 35: "we sell mobile phones and contracts" doesn't say whether they make
+  // them or resell them, and only the second needs retail services.
+  //
+  // WHERE THEY ARE SEEN deliberately does NOT go in. The verified vocabulary
+  // holds real class 35 terms like "advertising and marketing services
+  // provided by means of social media", so a bakery that ticks Instagram
+  // would hand the model a legitimate route to a wrong class. Class 35
+  // advertising is for businesses that advertise for OTHERS. Those answers
+  // are still captured below — they scope the Brand Audit and tell us where
+  // evidence of use lives — they just never reach the agent.
+  if(sell.length){
+    const say={premises:'sells from a shop, office or premises customers visit',
+               own_site:'sells through its own website',
+               marketplace:'sells through online marketplaces',
+               enquiry:'sells by enquiry and invoice',
+               wholesale:'sells to wholesale or trade customers'};
+    const bits=sell.map(k=>say[k]).filter(Boolean);
+    if(sellOther) bits.push('also sells via '+sellOther);
+    if(bits.length) parts.push('How it sells: '+bits.join('; ')+'.');
+    if(Q1.resale==='others') parts.push('Sells other brands\u2019 products as well as its own \u2014 retail services apply.');
+    else if(Q1.resale==='mostly_others') parts.push('Mainly resells other brands\u2019 products \u2014 retail services apply.');
+    else if(Q1.resale==='own') parts.push('Sells only its own products, not other brands\u2019.');
+  }
+
+  if(Q1.age==='existing') parts.push('Existing brand, in use '+(DUR_LABEL[Q1.dur]||'for some time')+'.');
+  else if(Q1.age==='new') parts.push('New brand, not yet in use.');
+
+  state.classSource={route:'1', value:parts.join(' — '), email:state.emailForAI,
+    answers:{pitch:pitch, provides:Q1.mode||'', goods:goods, services:services,
+             unique:uniq, brand_age:Q1.age||'', in_use_for:Q1.dur||'',
+             website:(Q1.web==='yes'?site:''),
+             // Captured for the audit scope, the risk conversation and Zoho —
+             // carried on the session either way, agent or no agent.
+             sells_via:sell, sells_via_other:sellOther, resale:Q1.resale||'',
+             seen_via:seen, seen_via_other:seenOther}};
+  state.channels={sells_via:sell, sells_via_other:sellOther, resale:Q1.resale||'',
+                  seen_via:seen, seen_via_other:seenOther};
+  // Spec §9: server-side allowance check + usage record before every run.
+  aiUse('class_agent', out, function(){ runClassAgent(parts.join(' — '), Q1.mode||null, out); });
+  // A website given here is the visitor's own site, so it belongs on the
+  // session proper, not buried in class_source — otherwise it never reaches
+  // the resolver or Zoho. currentSnapshot() sends it as business_website.
+  if(Q1.web==='yes' && site) state.businessWebsite=site;
+  logEvent('class_source_applied','classes',
+    {route:'1',provides:Q1.mode||'',brand_age:Q1.age||'',has_website:Q1.web==='yes',
+     sells_via:sell,resale:Q1.resale||'',seen_via:seen},true);
+}
+
+/* ── The agent ───────────────────────────────────────────────────────────
+   Calls POST /suggest-classes and drops the result into the SAME pre-ticked
+   picker the trademark and company routes use, so however a visitor got
+   here the confirm step looks identical.
+
+   Every term shown came from a mark registered in the last five years; the
+   model chose from that list by index and cannot write a term of its own.
+   Until 10 Aug this route captured an email and promised classes in a report
+   nothing sent — that promise is now actually kept. */
+function runClassAgent(text, provides, outEl){
+  const res=document.getElementById('ho1-res') || (function(){
+    const d=document.createElement('div'); d.className='hres'; d.id='ho1-res';
+    outEl.parentNode.insertBefore(d, outEl); return d; })();
+  // The longest wait in the wizard (~5s) and the point the visitor has just
+  // typed the most — so it gets the six cards, looping if the model is slow.
+  nugStart('ho1', res, 'Working out your classes\u2026', NUG.ai_search);
+  fetch((CONFIG.API_BASE||'').replace(/\/$/,'')+'/suggest-classes',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({text:text, provides:provides||undefined})
+  }).then(r=>r.json()).then(async function(d){
+    nugStop('ho1'); await busyOff('ho1');
+    if(!d || !d.ok || !(d.classes||[]).length){
+      res.innerHTML='<div class="r"><span>'+
+        ((d&&d.message)||'We couldn\u2019t work that out — please pick your classes below.')+
+        '</span></div>';
+      res.classList.remove('hidden');   // nugStop hid it on the way out
+      return;
+    }
+    // Flatten to the picker's shape. Terms ride along on class_source so the
+    // specification detail reaches Zoho even though the free UI only shows
+    // class numbers.
+    const items=d.classes.map(c=>({n:c.n, label:c.label, on:true}));
+    const terms={}; d.classes.forEach(c=>{ terms[c.n]=c.terms.map(t=>t.term); });
+    showClassPicker('1','What we think you need', items,
+      {value:text, label:'described business', agent_terms:terms, model:d.model});
+  }).catch(async function(){
+    nugStop('ho1'); await busyOff('ho1');
+    res.innerHTML='<div class="r"><span>Suggestions are unavailable — please pick your classes below.</span></div>';
+    res.classList.remove('hidden');     // nugStop hid it on the way out
+  });
+}
+function aiGate(opt){
+  const e=(document.getElementById('ho'+opt+'-email').value||'').trim();
+  if(!/.+@.+\..+/.test(e)){alert('Please enter a valid email.');return;}
+  state.emailForAI=e;
+  // Put it on the SESSION, not just in class_source. Until now this email
+  // lived only inside class_source.email, so journey_sessions.email stayed
+  // null — which meant the Zoho push saw "no contact" and fell through to the
+  // resolver, manufacturing a "Search Result Only" lead for somebody who had
+  // just volunteered their address. A given email beats a found one every
+  // time, and Zoho dedupes on Email, so it has to be in the standard field.
+  //
+  // email_source travels with it because CONSENT DIFFERS: an address given to
+  // receive class suggestions is not permission to market. Cerebrum must be
+  // able to tell the three apart — ai_gate, report_form, resolver.
+  state.email=e; state.emailSource='ai_gate';
+  logEvent('email_captured','classes',{source:'ai_gate'},true);
+  const body=document.getElementById('ho-'+opt);
+  const ph={1:'Describe what your business does — the more detail the better',2:'https://your-website.com'}[opt];
+  body.innerHTML=aiInputHtml(opt,ph);
+}
+/* Route 2: read their site, then hand them the SAME questions pre-filled.
+   Jonathan, 10 Aug: "What the website URL should do, is try and answer the
+   questions from describe your business." Showing what we read — rather than
+   jumping to classes — turns a misread page into a visible mistake they can
+   correct, instead of silently wrong classes. */
+function readWebsite(){
+  const val=(document.getElementById('ho2-in').value||'').trim();
+  const out=document.getElementById('ho2-out');
+  if(!/^(https?:\/\/)?[\w.-]+\.[a-z]{2,}([\/#?].*)?$/i.test(val)){
+    out.textContent='That doesn\u2019t look like a website address — e.g. yourbusiness.co.uk'; return; }
+  // Spec §8: the website address came first; email just-in-time before the
+  // AI reads the site.
+  if(!state.emailForAI){ aiEmailGate('2', readWebsite); return; }
+  if(!readWebsite._ok){
+    aiUse('read_website', out, function(){
+      readWebsite._ok=true; try{ readWebsite(); } finally { readWebsite._ok=false; }
+    });
+    return;
+  }
+  const body=document.getElementById('ho-2');
+  busyOn('ho2', out, 'Reading your website\u2026');
+  fetch((CONFIG.API_BASE||'').replace(/\/$/,'')+'/read-website',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url:val})
+  }).then(r=>r.json()).then(async function(d){
+    await busyOff('ho2');
+    if(!d || !d.ok){
+      out.textContent=(d&&d.message)||'We couldn\u2019t read that website.';
+      return;
+    }
+    state.businessWebsite=val;
+    // Swap in the guided questions, pre-filled from the page.
+    q1Claim('ho-2');
+    body.innerHTML='<div class="gate-note" style="margin-bottom:12px"><b>Here\u2019s what we read from your site.</b><br>'+
+      'Please check it and correct anything that\u2019s wrong — then we\u2019ll work out your classes.</div>'+q1Html();
+    q1Wire();
+    const a=d.answers||{};
+    if(a.pitch) document.getElementById('q1-pitch').value=a.pitch;
+    if(a.goods) document.getElementById('q1-goods').value=a.goods;
+    if(a.services) document.getElementById('q1-services').value=a.services;
+    if(a.unique) document.getElementById('q1-unique').value=a.unique;
+    if(a.provides){
+      const b=document.querySelector('#q1-mode button[data-m="'+a.provides+'"]');
+      if(b) b.click();
+    }
+    // They gave us the site, so pre-answer that question too.
+    const wy=document.querySelector('#q1-web button[data-w=yes]');
+    if(wy){ wy.click(); const w=document.getElementById('q1-website'); if(w) w.value=val; }
+  }).catch(async function(){
+    await busyOff('ho2');
+    out.textContent='We couldn\u2019t reach that website — please describe the business instead.';
+  });
+}
+
+function aiSubmit(opt){
+  // Does NOT run live (AI cost / abuse guard). Captures the input + email; the
+  // report build runs the AI class suggestion server-side once queued.
+  const val=(document.getElementById('ho'+opt+'-in').value||'').trim();
+  if(!val){alert('Please add your '+(opt==='1'?'description':'website address')+'.');return;}
+  if(opt==='1' && val.length<15){alert('A little more detail helps the AI — a sentence or two on what you sell or do.');return;}
+  if(opt!=='1' && !/^(https?:\/\/)?[\w.-]+\.[a-z]{2,}([\/#?].*)?$/i.test(val)){
+    alert('That doesn\u2019t look like a website address \u2014 e.g. yourbusiness.co.uk');return;}
+  state.classSource={route:opt,value:val,email:state.emailForAI};
+  // Route 2 is the visitor's OWN website (route 4 is a competitor's, which
+  // must never be treated as theirs — see contact_resolver.py's "NEVER
+  // RESOLVE FROM THE COMPETITOR FIELDS"). Only route 2 populates it.
+  if(opt==='2') state.businessWebsite=val;
+  document.getElementById('ho'+opt+'-out').textContent='✓ Captured — suggested classes will be in your emailed report.';
+}
+let ho5mode='tm';
+function ho5Mode(m){ho5mode=m;
+  document.getElementById('ho5-mode-tm').classList.toggle('on',m==='tm');
+  document.getElementById('ho5-mode-owner').classList.toggle('on',m==='owner');
+  document.getElementById('ho5-q').placeholder = m==='tm'
+    ? 'Trademark name or number' : 'Company / owner name or IPO ID';
+  document.getElementById('ho5-q').value=''; document.getElementById('ho5-res').classList.add('hidden');}
+
+/* ── Route 5 result list ─────────────────────────────────────────────────
+   FIXED 10 Aug 2026. Reported by Jonathan: searching a trademark found the
+   right mark (UK00801444035 CORSEARCH) but clicking it did nothing.
+
+   Three causes, all in this list:
+
+   1. NO DEBOUNCE. `oninput` called ho5Search() on every keystroke, so
+      "CORSEARCH" fired ~8 overlapping requests. (The company search two
+      functions down always had a 300ms debounce; this one was missed.)
+   2. OUT-OF-ORDER RESPONSES. With requests in flight together, a slow
+      earlier one could land last and render results for a shorter prefix
+      over the correct list.
+   3. HANDLERS LOST ON RE-RENDER. Each response replaced res.innerHTML and
+      re-attached .onclick to the new rows. A response landing between
+      mousedown and mouseup destroyed the row mid-click, so no click event
+      ever fired — exactly the reported symptom.
+
+   Fixes: debounce to match route 3; a sequence token so only the newest
+   response renders; and ONE delegated listener on the container, bound
+   once, so replacing innerHTML can never orphan it again. */
+let ho5t, ho5seq=0, ho5rows=[], ho5kind='mark';
+function ho5Bind(){
+  const res=document.getElementById('ho5-res');
+  if(!res || res.dataset.bound) return;
+  res.dataset.bound='1';
+  res.addEventListener('click', function(e){
+    const row=e.target.closest('.r[data-i]');
+    if(!row || !res.contains(row)) return;
+    const item=ho5rows[+row.dataset.i];
+    if(!item) return;
+    if(ho5kind==='owner') ho5PickOwner(item); else ho5Pick(item);
+  });
+}
+function ho5Search(){
+  const res=document.getElementById('ho5-res');
+  ho5Bind();
+  clearTimeout(ho5t);
+  ho5t=setTimeout(async()=>{
+    const q=(document.getElementById('ho5-q').value||'').trim();
+    if(q.length<2){res.classList.add('hidden');return;}
+    const seq=++ho5seq;
+    busyOn('ho5',res,ho5mode==='owner'?'Searching owners\u2026':'Searching the register\u2026');
+    if(ho5mode==='owner'){
+      const data=await lookupApi('owners',{q});
+      await busyOff('ho5');
+      if(seq!==ho5seq) return;                       // a newer search won
+      const rows=(data&&data.results)||[];
+      ho5rows=rows; ho5kind='owner';
+      res.innerHTML=rows.slice(0,6).map((r,i)=>`<div class="r" data-i="${i}"><span class="rn">${r.name||'—'}</span><span>${r.postcode||''} · ${r.trademark_count} marks</span></div>`).join('')||'<div class="r">No matches</div>';
+    } else {
+      const data=await lookupApi('marks',{q});
+      await busyOff('ho5');
+      if(seq!==ho5seq) return;
+      const rows=(data&&data.results)||[];
+      ho5rows=rows; ho5kind='mark';
+      // When the engine had to loosen the spelling to find anything, say so
+      // rather than quietly showing different marks than the ones asked for.
+      // "No trademarks" on a misspelt famous name reads as "this name is
+      // free", which is the single most misleading thing this box can say.
+      const hint=(data&&data.suggested&&rows.length)
+        ? `<div class="didyou">No exact match for &ldquo;${esc(q)}&rdquo;. Did you mean one of these?</div>` : '';
+      res.innerHTML=hint+(rows.slice(0,6).map(markRowHtml).join('')
+        || `<div class="r">Nothing on the register matched &ldquo;${esc(q)}&rdquo;. Check the spelling, or try a shorter part of the name.</div>`);
+    }
+    res.classList.remove('hidden');
+  },300);
+}
+/* One trademark row. Jonathan, 10 Aug: show the application date, status,
+   mark feature, class numbers AND a plain-English class description — and
+   show an applicant's trademarks exactly the same way, which is why this is
+   one function used by both lists rather than two templates to keep in sync. */
+function markRowHtml(t,i){
+  const feat=t.mark_feature?`<span class="feat">${t.mark_feature}</span>`:'';
+  const date=t.application_date?` · Applied ${t.application_date}`:'';
+  const cd=(t.classes_detail&&t.classes_detail.length)?t.classes_detail:
+           (t.classes||[]).map(n=>({n:n,label:''}));
+  const cls=cd.length
+    ? `<span class="cls">${cd.map(c=>`<b>${c.n}</b>${c.label?' '+c.label:''}`).join(' · ')}</span>`
+    : '';
+  return `<div class="r" data-i="${i}"><span class="rn">${t.number}</span>`+
+    `<span><b>${t.name||'—'}</b>${feat}`+
+    `<span class="meta">${t.status||''}${date}${t.applicant?' · '+t.applicant:''}</span>`+
+    `${cls}</span></div>`;
+}
+async function ho5PickOwner(o){
+  const res=document.getElementById('ho5-res');
+  busyOn('ho5',res,'Loading their trademarks\u2026');
+  const data=await lookupApi('owner',{id:o.ipo_identifier});
+  await busyOff('ho5');
+  const tms=(data&&data.trademarks)||[];
+  // Drilling into an owner's marks — these become the clickable rows, so the
+  // delegated handler must now treat them as marks, not owners.
+  ho5seq++; ho5rows=tms; ho5kind='mark';
+  res.innerHTML=`<div class="r" id="ho5-back"><span class="rn">← back</span><span>${o.name}’s trademarks</span></div>`+
+    tms.slice(0,20).map(markRowHtml).join('');
+  const back=document.getElementById('ho5-back');
+  if(back) back.onclick=()=>{ ho5kind='owner'; ho5Search(); };
+}
+/* ── Confirm-before-adding class picker ─────────────────────────────────
+   Jonathan, 10 Aug: "it isn't always obvious that classes have populated".
+
+   Picking a competitor mark or a company used to silently push classes into
+   the basket, which is easy to miss. Two reasons this is better than a
+   louder confirmation:
+
+     1. Visibility — you can see exactly what was found before it counts.
+     2. Relevance — a competitor's classes routinely include things that
+        have nothing to do with THIS visitor, and classes drive the search.
+        Taking all of them wholesale makes results worse.
+
+   Pre-ticked so the common case is still one click. */
+function classLabel(n){ return NICE[+n]||''; }
+let _pick={route:null,items:[],meta:null};
+/* Which container a route's results belong in.
+   Until 18 Aug this was `route==='5' ? 'ho5-res' : 'ho3-res'`, so the
+   describe-your-business route (1) tried to render into the COMPANY tool's
+   container — which only exists once that other tool has been opened. Use
+   route 1 on its own and the lookup returned null, showClassPicker bailed at
+   the guard below, and the visitor got no picker at all. The waiting carousel
+   is what made it obvious: a frozen card reads as broken where three pulsing
+   hexagons read as "still working". */
+function pickHost(route){
+  return document.getElementById('ho'+route+'-res');
+}
+function showClassPicker(route,title,items,meta){
+  _pick={route:route,items:items,meta:meta};
+  const box=pickHost(route);
+  if(!box) return;
+  box.classList.remove('hidden');
+  box.innerHTML=`<div class="pickbox">
+    <h4>${title}</h4>
+    <p class="sub">${items.every(c=>c.on!==false)?'All ticked. Untick anything that doesn\u2019t apply':'The strongest matches are ticked. Tick any others that apply'} \u2014 these decide what we search.</p>
+    ${items.map((c)=>`<label class="pickrow"><input type="checkbox" data-n="${c.n}"${c.on===false?'':' checked'}>
+      <span class="n">${c.n}</span><span class="lbl">${c.label||classLabel(c.n)}</span></label>`).join('')}
+    <div class="pickacts">
+      <button class="btn primary" id="pick-add">Add selected classes</button>
+      <button class="btn ghost" id="pick-cancel">Cancel</button>
+      <span class="count" id="pick-count"></span>
+    </div></div>`;
+  const upd=()=>{const n=box.querySelectorAll('.pickrow input:checked').length;
+    document.getElementById('pick-count').textContent=n+' of '+items.length+' selected';
+    document.getElementById('pick-add').disabled=(n===0);};
+  box.querySelectorAll('.pickrow input').forEach(cb=>cb.addEventListener('change',upd));
+  document.getElementById('pick-add').onclick=()=>applyPickedClasses();
+  document.getElementById('pick-cancel').onclick=()=>{ box.innerHTML=''; box.classList.add('hidden'); };
+  upd();
+}
+function clearClassGate(){const e=document.getElementById('cls-gate');
+  if(e) e.classList.add('hidden');}
+function applyPickedClasses(){
+  clearClassGate();
+  const route=_pick.route;
+  const box=pickHost(route);
+  const chosen=[...box.querySelectorAll('.pickrow input:checked')].map(cb=>+cb.dataset.n);
+  if(!chosen.length) return;
+  state.classes=[...new Set([...state.classes,...chosen])].sort((a,b)=>a-b);
+  state.classSource=Object.assign({route:route,chosen_classes:chosen},_pick.meta||{});
+  renderBasket();
+  logEvent('class_source_applied','classes',
+    Object.assign({route:route,classes:chosen},_pick.meta&&_pick.meta.value?{value:_pick.meta.value}:{}),true);
+  box.innerHTML=`<div class="r"><span>\u2713 Added ${chosen.length} class${chosen.length===1?'':'es'}: ${chosen.join(', ')}</span></div>`;
+  // Take them to the basket so the change is impossible to miss.
+  const basket=document.getElementById('cls-basket');
+  if(basket){ basket.scrollIntoView({behavior:'smooth',block:'center'});
+    basket.style.transition='box-shadow .3s'; basket.style.boxShadow='0 0 0 3px rgba(229,22,82,.35)';
+    setTimeout(()=>{basket.style.boxShadow='';},1400); }
+}
+async function ho5Pick(m){
+  const res=document.getElementById('ho5-res');
+  busyOn('ho5',res,'Reading the classes and terms\u2026');
+  const data=await lookupApi('basket',{number:m.number});
+  await busyOff('ho5');
+  const b=data&&data.basket;
+  const cls=(b&&b.classes)||[];
+  if(!cls.length){
+    document.getElementById('ho5-res').innerHTML='<div class="r"><span>No classes found for that mark.</span></div>';
+    return;
+  }
+  // b.entries carries the engine's per-class Nice terms. Not shown (the free
+  // search stays a quick classes-only pick) but kept on class_source so it
+  // reaches journey_sessions and, once wired, G_S_Scope_Classes_Terms.
+  const items=(b.entries&&b.entries.length)
+    ? b.entries.map(e=>({n:e.nice_class,label:e.class_label||''}))
+    : cls.map(n=>({n:n,label:''}));
+  showClassPicker('5',`${m.name||m.number} \u2014 classes on this trademark`,items,
+    {value:m.number,label:m.name,term_basket:b});
+}
+/* ── Route 3 company list ────────────────────────────────────────────────
+   Hardened 10 Aug 2026, same treatment as route 5 above.
+
+   This one already had the 300ms debounce, so it was never as broken as
+   route 5 — but debounce alone doesn't make it safe. Two holes remained:
+   a slow response could still land after a newer one and paint stale
+   results, and re-rendering innerHTML re-attached .onclick to fresh
+   elements, so a response arriving mid-click could still swallow the
+   click. Rare on a fast connection, ordinary on a phone on 4G.
+
+   Same three-part fix so both routes now behave identically: debounce,
+   sequence token, and one delegated listener bound once. */
+let ho3t, ho3seq=0, ho3rows=[];
+function ho3Bind(){
+  const res=document.getElementById('ho3-res');
+  if(!res || res.dataset.bound) return;
+  res.dataset.bound='1';
+  res.addEventListener('click', function(e){
+    const row=e.target.closest('.r[data-i]');
+    if(!row || !res.contains(row)) return;
+    const item=ho3rows[+row.dataset.i];
+    if(item) ho3coPick(item);
+  });
+}
+function ho3coSearch(){
+  ho3Bind();
+  clearTimeout(ho3t);
+  ho3t=setTimeout(async()=>{
+    const q=(document.getElementById('ho3-q').value||'').trim();
+    const res=document.getElementById('ho3-res');
+    if(q.length<2){res.classList.add('hidden');return;}
+    const seq=++ho3seq;
+    busyOn('ho3',res,'Searching Companies House\u2026');
+    const data=await lookupApi('company',{q});
+    await busyOff('ho3');
+    if(seq!==ho3seq) return;                        // a newer search won
+    const rows=(data&&data.results)||[];
+    ho3rows=rows;
+    res.innerHTML=rows.slice(0,6).map((r,i)=>`<div class="r" data-i="${i}"><span class="rn">${r.number}</span><span><b>${r.name||'—'}</b> · ${r.status} · ${r.address||''}</span></div>`).join('')||'<div class="r">No matches</div>';
+    res.classList.remove('hidden');
+  },300);
+}
+async function ho3coPick(c){
+  busyOn('ho3',document.getElementById('ho3-res'),'Working out the classes\u2026');
+  const data=await lookupApi('company-classes',{number:c.number});
+  await busyOff('ho3');
+  const classes=(data&&data.classes)||[];
+  if(!classes.length){
+    document.getElementById('ho3-res').innerHTML='<div class="r"><span>No classes found for that company.</span></div>';
+    return;
+  }
+  // Pre-tick the strong matches (tiers a/b) exactly as the old auto-add did,
+  // but show the weaker ones too so the visitor can opt in rather than have
+  // the engine's judgement applied silently.
+  const items=classes.map(x=>({n:x.nice_class,
+    label:(x.class_label||classLabel(x.nice_class))+(x.band?' \u00b7 '+x.band:''),
+    on:(x.tier==='a'||x.tier==='b')}));
+  const src=data.method==='empirical'?' (from real filings)':data.method==='mixed'?' (part real filings)':'';
+  showClassPicker('3',`${c.name} \u2014 suggested classes${src}`,items,
+    {value:c.number,label:c.name,sic:data.sic_codes,method:data.method,term_basket:data.basket});
+  document.getElementById('ho3-out').textContent='';
+}
+async function ho3Apply(){
+  const raw=(document.getElementById('ho3-q').value||'').trim();
+  const out=document.getElementById('ho3-out');
+  if(!raw){ out.textContent='Enter one or more SIC codes.'; return; }
+  const data=await lookupApi('sic',{q:raw});
+  const classes=(data&&data.classes)||[];
+  if(!classes.length){ out.innerHTML='No classes matched those SIC codes. Try the full 5-digit code(s).'; return; }
+  const all=classes.map(c=>c.nice_class);
+  // Add the top-tier classes to the basket (a/b; the client can trim).
+  const toAdd=classes.filter(c=>c.tier==='a'||c.tier==='b').map(c=>c.nice_class);
+  state.classes=[...new Set([...state.classes,...toAdd])].sort((a,b)=>a-b);
+  clearClassGate();
+  // sic_engine.to_basket() (controller.py) already returns terms per class —
+  // captured, not shown, same as the other two routes.
+  state.classSource={route:'3',value:raw,mapped:all,method:data.method,term_basket:data.basket};
+  renderBasket();
+  logEvent('class_source_applied','classes',{route:'3-sic',sic:raw,classes:toAdd},true);
+  const src = data.method==='empirical' ? ' (from real filings)' : data.method==='mixed' ? ' (part real filings)' : '';
+  out.innerHTML='✓ Mapped to'+src+': '+classes.map(c=>`<span class="term" style="cursor:default">${c.nice_class} <small>(${c.band})</small></span>`).join(' ')+
+    (data.unmatched&&data.unmatched.length?`<div class="muted-note">Unrecognised: ${data.unmatched.join(', ')}</div>`:'');
+}
+/* ── Busy indicator ──────────────────────────────────────────────────────
+   Added 10 Aug 2026 after Jonathan reported the trademark lookup felt slow.
+   Measured on the live engine before building this, rather than guessing:
+
+     /lookup/marks      2.6 - 3.6s   <- the one that felt slow
+     POST /free-search  3.5s         <- showed NOTHING at all while waiting
+     /lookup/basket     0.42s
+     /lookup/company    0.25s
+
+   His own spec says: under half a second show nothing, because a flash of
+   loader reads as more broken than a short pause. So busyOn() waits 500ms
+   before it draws anything and busyOff() cancels a pending one — the two
+   fast endpoints above will normally never show it, while the two slow ones
+   always will. Don't replace this with an immediate show; the delay is the
+   point. */
+const _busy={}, _shownAt={};
+const BUSY_DELAY=500;   // show nothing below this — a flash reads as broken
+const BUSY_MIN=450;     // ...but once shown, stay up at least this long
+
+/* ── the waiting carousel ────────────────────────────────────────────────
+   Copy lives in freesearch/nuggets.py and is fetched once. The two cards for
+   the register search are inlined as a fallback so a waiting screen never
+   arrives empty if that fetch failed. */
+let NUG={dwell:3.4,ai_search:[],free_search:[
+  {title:'The first five years are the strongest',
+   text:'For the first five years you can enforce your rights without having to prove you\u2019ve used the mark.'},
+  {title:'We\u2019ve done this a few times',
+   text:'We\u2019ve registered over 4,000 trademarks since 2008. Last year our application success rate was 98%.'}]};
+(function loadNuggets(){
+  fetch((CONFIG.API_BASE||'').replace(/\/$/,'')+'/nuggets').then(r=>r.json())
+    .then(function(d){ if(d&&d.ok&&d.nuggets&&(d.nuggets.ai_search||[]).length) NUG=d.nuggets; })
+    .catch(function(){});
+})();
+
+const _nugT={}, _nugHost={};
+function nugHtml(msg,cards,i){
+  const c=cards[i%cards.length]||{title:'',text:''};
+  const dots=cards.map((_,k)=>`<i class="${k===i%cards.length?'on':''}"></i>`).join('');
+  return `<div class="nug" role="status" aria-live="polite">
+    <span class="tmh-loader" aria-hidden="true"><i></i><i></i><i></i></span>
+    ${msg?`<div class="msg">${esc(msg)}</div>`:''}
+    <div class="bar"><i></i></div>
+    <div class="card" key="${i}"><div class="tag">Did you know</div>
+      <div class="t">${esc(c.title)}</div><div class="b">${esc(c.text)}</div></div>
+    <div class="dots">${dots}</div></div>`;
+}
+/* Rotates until stopped. Loops deliberately — a slow response should keep
+   showing cards rather than freeze on the last one. */
+function nugStart(key,target,msg,cards){
+  if(!target||!cards||!cards.length) return;
+  let i=0;
+  _nugHost[key]=target;
+  target.classList.remove('hidden');
+  target.innerHTML=nugHtml(msg,cards,i);
+  clearInterval(_nugT[key]);
+  _nugT[key]=setInterval(function(){
+    if(!document.body.contains(target)){ clearInterval(_nugT[key]); return; }
+    target.innerHTML=nugHtml(msg,cards,++i);
+  }, (NUG.dwell||3.4)*1000);
+}
+function nugStop(key){
+  clearInterval(_nugT[key]); _nugT[key]=null;
+  // Clear the host too. The carousel owns what it drew, and every caller that
+  // wants something else in its place writes over this immediately; the one
+  // that doesn't (the class agent, whose picker renders elsewhere) would
+  // otherwise leave a static card on screen looking frozen.
+  const el=_nugHost[key];
+  if(el){ el.innerHTML=''; el.classList.add('hidden'); }
+  _nugHost[key]=null;
+}
+
+function busyOn(key,target,msg){
+  if(_busy[key]) clearTimeout(_busy[key]);
+  _shownAt[key]=0;
+  _busy[key]=setTimeout(function(){
+    _busy[key]=null;
+    if(!target) return;
+    _shownAt[key]=Date.now();
+    target.classList.remove('hidden');
+    target.innerHTML='<div class="tmh-busy">'+
+      '<span class="tmh-loader" role="status" aria-live="polite" aria-label="Loading">'+
+      '<i></i><i></i><i></i></span>'+(msg?'<span class="msg">'+msg+'</span>':'')+'</div>';
+  },BUSY_DELAY);
+}
+
+/* AWAIT this before rendering results.
+   Measured on a warm connection the lookup can come back in ~600ms — so
+   without a floor the loader would appear at 500ms and vanish 100ms later,
+   which is the strobe Jonathan's spec explicitly warns against. If it never
+   got drawn this returns immediately and costs nothing; only when it IS on
+   screen do we hold results back, and then by at most ~450ms. */
+function busyOff(key){
+  if(_busy[key]){ clearTimeout(_busy[key]); _busy[key]=null; return Promise.resolve(); }
+  const shown=_shownAt[key];
+  if(!shown) return Promise.resolve();
+  _shownAt[key]=0;
+  const left=BUSY_MIN-(Date.now()-shown);
+  return left>0 ? new Promise(r=>setTimeout(r,left)) : Promise.resolve();
+}
+
+/* The main search is a screen change and the longest wait, so it gets a
+   blocking overlay — which also stops a second press of "Begin Free Search"
+   firing a duplicate search and a duplicate search_run event. */
+/* The register search. Deliberately held for long enough to show both cards
+   even when the engine answers faster (Jonathan, 18 Aug): an instant result
+   on a search this consequential reads as though nothing much happened. The
+   floor is OVERLAY_MIN and it is a single number — turn it down to 0 and the
+   overlay simply closes as soon as the answer lands. */
+const OVERLAY_MIN=7000;
+let _ovShown=0;
+function overlayOn(msg,sub){
+  overlayOff();
+  _busy._ov=setTimeout(function(){
+    _busy._ov=null;
+    _ovShown=Date.now();
+    const d=document.createElement('div');
+    d.className='tmh-overlay'; d.id='tmh-overlay';
+    if(window!==window.parent){
+      d.classList.add('embedded');
+      try{ window.parent.postMessage({brauditScrollTop:true},'*'); }catch(e){}
+    }
+    document.body.appendChild(d);
+    const host=document.createElement('div');
+    d.appendChild(host);
+    nugStart('_ov', host, msg, NUG.free_search);
+    if(sub){ const x=document.createElement('div'); x.className='sub';
+      x.textContent=sub; d.appendChild(x); }
+  },500);
+}
+/* Returns a promise so the caller can await the floor. */
+function overlayOff(){
+  if(_busy._ov){clearTimeout(_busy._ov);} _busy._ov=null;
+  const shown=_ovShown;
+  const close=function(){ nugStop('_ov'); _ovShown=0;
+    const d=document.getElementById('tmh-overlay'); if(d) d.remove(); };
+  if(!shown){ close(); return Promise.resolve(); }
+  const left=OVERLAY_MIN-(Date.now()-shown);
+  if(left<=0){ close(); return Promise.resolve(); }
+  return new Promise(function(r){ setTimeout(function(){ close(); r(); }, left); });
+}
+
+async function lookupApi(action,params){
+  // '' = same-origin: the page is served BY the engine (single-host design),
+  // so relative /lookup/<action> is always the live API. No mock exists —
+  // a stub that answers convincingly is how every bad demo bug happened.
+  const base=(CONFIG.API_BASE||'').replace(/\/$/,'');
+  const qs=new URLSearchParams(params).toString();
+  try{ return await (await fetch(base+'/lookup/'+action+'?'+qs)).json(); }
+  catch(e){ return {results:[], error:'The search service could not be reached.'}; }
+}
+/* (mock deleted — the engine is same-origin; nothing here invents data) */
+
+function go(id){
+  if(id==='marks'){state.name=document.getElementById('name').value.trim();
+    if(!state.name){shake('name');return;}
+    // Carry it into the editable field on step 2 rather than echoing it as
+    // text: from here on the visitor can change it, or empty it and let the
+    // tagline be the thing we search.
+    document.getElementById('word-mark').value=state.name;
+    document.getElementById('tick-name').classList.add('on');
+    // The first real decision — this is what mints the session (see
+    // ensureSession()). Everything before this point was a blank visit.
+    logEvent('name_submitted',QUICK?'classes':'marks',{name:state.name},true);
+    // Quick mode: the name IS the word mark and jurisdictions keep their
+    // defaults (UK now, no plans) — straight to classes.
+    if(QUICK){ pushScreen('classes'); return; }
+  } else {
+    logEvent('screen_enter',id,{},false);
+  }
+  pushScreen(id);
+}
+function shake(elId){const el=document.getElementById(elId);el.style.borderColor='#c0392b';el.focus();
+  setTimeout(()=>el.style.borderColor='',900);}
+
+/* step 2 */
+// The file input lives inside a drawer that is re-shown rather than rebuilt,
+// so a delegated listener is steadier than binding on render.
+document.addEventListener('change',function(e){
+  if(e.target && e.target.id==='logo-file'){
+    state.logo=!!(e.target.files && e.target.files.length);
+    if(state.logo) logoLater(false);
+    logEvent('field_commit','marks',{field:'logo_file',on:state.logo},true);
+  }
+});
+function toggleTick(k){
+  const el=document.getElementById(k==='logo'?'tick-logo':'tick-tag');
+  el.classList.toggle('on');
+  const on=el.classList.contains('on');
+  const drawer=document.getElementById(k==='logo'?'logo-drawer':'tag-drawer');
+  if(drawer) drawer.classList.toggle('hidden',!on);
+  if(k==='logo'){ state.logo=on; if(!on) logoLater(false); }
+  if(k==='tag'&&!on) document.getElementById('tagline').value='';
+  logEvent('field_commit','marks',{field:k,on:on},true);}
+
+/* The name field on step 2 is editable so a tagline typed into the search box
+   can be moved where it belongs. Whatever stays in this box is the brand name;
+   empty it and give a tagline and the engine searches the tagline instead. */
+function syncWordMark(){
+  const v=(document.getElementById('word-mark').value||'').trim();
+  state.name=v;
+  document.getElementById('tick-name').classList.toggle('on',!!v);}
+
+function logoLater(later){
+  state.logoLater=!!later;
+  const box=document.getElementById('logo-later');
+  if(box) box.checked=!!later;
+  const drop=document.getElementById('logo-drop');
+  const panel=document.getElementById('logo-later-panel');
+  if(drop) drop.classList.toggle('hidden',!!later);
+  if(panel) panel.classList.toggle('hidden',!later);
+  logEvent('field_commit','marks',{field:'logo_later',on:!!later},true);}
+
+/* step 3 */
+function renderClassList(){const q=(document.getElementById('cls-search').value||'').toLowerCase();
+  const rows=Object.entries(NICE).filter(([n,l])=>!q||l.toLowerCase().includes(q)||('class '+n).includes(q))
+    .map(([n,l])=>{const on=state.classes.includes(+n);
+      return `<button type="button" class="row${on?' on':''}" onclick="${on?'removeClass':'addClass'}(${n})">`+
+        `<span class="n">${n}</span><span>${l}</span><span class="g">${on?'\u2713':'+'}</span></button>`;}).join('');
+  // Preserve the scroll position. innerHTML replaces every row, which resets
+  // the box to the top — so picking class 30 bounced you back up to class 1
+  // and you had to find your place again.
+  const box=document.getElementById('cls-list');
+  const keep=box.scrollTop;
+  box.innerHTML=rows||
+    '<div style="padding:18px 16px;font-size:15px;color:var(--quiet)">Nothing matched that.</div>';
+  box.scrollTop=keep;}
+function addClass(n){n=+n;if(!state.classes.includes(n))state.classes.push(n);state.classes.sort((a,b)=>a-b);clearClassGate();renderBasket();
+  logEvent('class_added','classes',{nice_class:n},true);}
+function removeClass(n){n=+n;state.classes=state.classes.filter(x=>x!==n);renderBasket();
+  logEvent('class_removed','classes',{nice_class:n},true);}
+function renderBasket(){const b=document.getElementById('cls-basket');
+  b.innerHTML=state.classes.length?state.classes.map(n=>
+    `<span class="chip">Class ${n} \u00b7 ${NICE[n]} <span class="x" onclick="removeClass(${n})">\u00d7</span></span>`).join('')
+    :'<span class="sub">Nothing picked yet. Search on the left, or try one of the four tools below.</span>';
+  const n=state.classes.length;
+  const label=n?(n+(n===1?' class picked':' classes picked')):'';
+  ['cls-count','cls-count-top'].forEach(function(id){
+    const c=document.getElementById(id); if(c) c.textContent=label; });
+  const go=document.getElementById('cls-go-top');
+  if(go) go.classList.toggle('hidden',!n);
+  renderClassList();}
+
+/* step 4 combined */
+/* ── the territory picker ────────────────────────────────────────────────
+   Rebuilt 18 Aug 2026. It used to render all 152 countries as a single wall
+   of chips, which is why the list felt incomplete — you could not find your
+   country, so you assumed it was missing. It wasn't; it was unscannable.
+
+   Now it mirrors the class picker one screen later: searchable list on the
+   left, what you have chosen as removable chips on the right. One pattern to
+   learn instead of two, and what you've picked is always visible in one
+   place rather than scattered through a long list.
+
+   Popular and the regional registers sit above the list as quick-adds. They
+   are the same underlying codes, so a country added either way shows once in
+   the basket — which is what fixes the UK / US / Australia / Singapore /
+   Saudi Arabia appearing in two places. */
+function buildPicker(which){
+  const host=document.getElementById(which==='now'?'pick-now':'pick-plan');
+  if(state[which].mode!=='select'){ host.innerHTML=''; return; }
+  if(!host.dataset.built){
+    host.dataset.built='1';
+    host.innerHTML=`<div class="cls-grid" style="margin-top:14px">
+      <div>
+        <input class="cls-search" type="search" id="jq-${which}"
+               placeholder="Search countries and regions&hellip;"
+               oninput="renderJList('${which}')">
+        <div class="quick" id="jquick-${which}"></div>
+        <div class="listbox" id="jlist-${which}"></div>
+      </div>
+      <div>
+        <div class="eyebrow">${which==='now'?'Where you trade today':'Where you\u2019re heading next'}</div>
+        <div class="basket" id="jbasket-${which}"></div>
+        <div class="panel madrid hidden" id="jmadrid-${which}"></div>
+      </div>
+    </div>`;
+  }
+  renderJQuick(which); renderJList(which); renderJBasket(which);
+}
+function jAll(){ return [...PICKER.popular, ...PICKER.regions, ...PICKER.all_countries]; }
+function jLabel(code){
+  const hit=jAll().find(c=>c.code===code);
+  return hit?hit.label:code;
+}
+function renderJQuick(which){
+  const sel=state[which].codes;
+  const btn=c=>`<button type="button" class="pill sm${sel.includes(c.code)?' on':''}"
+    onclick="tog('${which}','${c.code}')">${c.label}</button>`;
+  document.getElementById('jquick-'+which).innerHTML=
+    [...PICKER.popular,...PICKER.regions].map(btn).join('');
+}
+function renderJList(which){
+  const q=((document.getElementById('jq-'+which)||{}).value||'').toLowerCase();
+  const sel=state[which].codes;
+  const rows=PICKER.all_countries
+    .filter(c=>!q||c.label.toLowerCase().includes(q))
+    .map(c=>{const on=sel.includes(c.code);
+      return `<button type="button" class="row${on?' on':''}" onclick="tog('${which}','${c.code}')">
+        <span></span><span>${c.label}</span><span class="g">${on?'\u2713':'+'}</span></button>`;}).join('');
+  document.getElementById('jlist-'+which).innerHTML=rows||
+    '<div style="padding:18px 16px;font-size:15px;color:var(--quiet)">Nothing matched that.</div>';
+}
+function renderJBasket(which){
+  const sel=state[which].codes;
+  document.getElementById('jbasket-'+which).innerHTML=sel.length
+    ? sel.map(c=>`<span class="chip">${jLabel(c)} <span class="x" onclick="tog('${which}','${c}')">\u00d7</span></span>`).join('')
+    : `<span class="sub">Nothing picked yet. Search on the left, or use the shortcuts.</span>`;
+  // The Madrid prompt, offered at the point it becomes useful rather than as
+  // a fake country in the list. WIPO is a filing route, not a place.
+  const m=document.getElementById('jmadrid-'+which);
+  const cfg=(PICKER.madrid||{});
+  const show=cfg.note && sel.filter(c=>c!=='EU').length>=(cfg.threshold||3);
+  if(m){ m.classList.toggle('hidden',!show); if(show) m.innerHTML=`<p class="sub">${esc(cfg.note)}</p>`; }
+}
+function tog(which,code){
+  const arr=state[which].codes; const i=arr.indexOf(code);
+  if(i>=0)arr.splice(i,1); else arr.push(code);
+  renderJQuick(which); renderJList(which); renderJBasket(which);
+  logEvent('jurisdiction_set','jurisdiction',{which:which,codes:arr.slice()},true);}
+function setMode(which,mode){state[which].mode=mode;if(mode!=='select')state[which].codes=[];
+  document.getElementById('now-uk').classList.toggle('on',mode==='uk');
+  document.getElementById('now-select').classList.toggle('on',mode==='select');buildPicker(which);
+  logEvent('jurisdiction_set','jurisdiction',{which:which,mode:mode},true);}
+function revealPlan(){document.getElementById('plan-block').classList.remove('hidden');
+  document.getElementById('now-continue').classList.add('hidden');
+  document.getElementById('plan-block').scrollIntoView({behavior:'smooth'});}
+function setPlanMode(mode){
+  state.plan.mode=mode;
+  // Carry the countries through. Opening "further afield" with today's
+  // territories already ticked is the whole point of the question — you are
+  // saying where you are going NEXT, and you can only say that against where
+  // you already are. planCodes() subtracts them again, so ticking nothing
+  // extra still means "no plans beyond where I am now".
+  state.plan.codes = mode==='select' ? nowCodes().slice() : [];
+  document.querySelectorAll('#plan-seg .pill').forEach(o=>o.classList.toggle('on',o.dataset.plan===mode));
+  logEvent('jurisdiction_set','jurisdiction',{which:'plan',mode:mode},true);
+  const p=document.getElementById('pick-plan');
+  if(mode==='select'){p.classList.remove('hidden');buildPicker('plan');}else p.classList.add('hidden');}
+
+function nowCodes(){return state.now.mode==='uk'?['GB']:state.now.codes;}
+/* planning_to_trade is EXPANSION ONLY — where they want to go BEYOND where
+   they already trade (Jonathan, 17 Aug: "FR as we will already have GB in the
+   current"). So anything also present in trading_now is subtracted here.
+
+   That is why the step-3 picker can safely open with today's countries
+   pre-ticked: the ticks are context, showing them where they already are, and
+   only what they add on top counts as a plan. Tick nothing new and the plan is
+   empty, which is exactly "no plans beyond where I am now".
+
+   Kept in one function so the payload, the disclaimer and the Zoho record can
+   never disagree about what "planning to trade" means. */
+function planCodes(){
+  if(state.plan.mode==='none') return [];
+  const today=new Set(nowCodes());
+  const raw=state.plan.mode==='uk'?['GB']:state.plan.codes;
+  return raw.filter(c=>!today.has(c));
+}
+
+function buildPayload(){return {name:state.name,
+  tagline:document.getElementById('tagline').value.trim()||null,
+  logo:state.logo&&!state.logoLater?'data:image/png;base64,PLACEHOLDER':null,
+  classes:state.classes,class_source:state.classSource,
+  trading_now:nowCodes(),planning_to_trade:planCodes(),tenant_id:CONFIG.TENANT_ID};}
+
+/* run search — soft funnel: always show limited results, no hard gate here */
+let _searching=false;
+async function beginSearch(){
+  if(_searching) return;              // a second press must not fire a second search
+  // At least one class (Jonathan, 17 Aug). Class overlap is what turns a
+  // lookalike name into a real conflict, so a classless search is genuinely
+  // worse informed — and the four tools that pick classes for you are on this
+  // same screen, so this is a nudge rather than a dead end.
+  if(!state.classes.length){
+    const b=document.getElementById('cls-basket');
+    const e=document.getElementById('cls-gate');
+    if(e){ e.textContent='Please add at least one class before searching — '+
+      'use the tools below if you are not sure which apply.';
+      e.classList.remove('hidden'); }
+    if(b){ b.scrollIntoView({behavior:'smooth',block:'center'});
+      b.style.transition='box-shadow .3s'; b.style.boxShadow='0 0 0 3px rgba(229,22,82,.35)';
+      setTimeout(()=>{b.style.boxShadow='';},1400); }
+    logEvent('search_blocked_no_class','classes',{},false);
+    return;
+  }
+  _searching=true;
+  const payload=buildPayload();
+  overlayOn('Checking the UK trademark register\u2026','This usually takes a few seconds.');
+  let out;
+  try{ out=await callSearch(payload); }
+  finally{ await overlayOff(); _searching=false; }
+  if(!out.ok){
+    // The usage gate. Not an error — it is the moment the free tool asks for
+    // something back, so it gets a proper screen rather than an alert box.
+    if(out.error==='account_required'){ showAccountGate(out); return; }
+    alert('Search error: '+(out.error||'unknown'));
+    return;
+  }
+  state.lastResult=out.result;renderResults(out.result);
+  state.resultsComputedFrom=snapshotInputs(); // for the staleness check on later back/forward
+  logEvent('search_run','results',{name:payload.name,classes:payload.classes,
+    trading_now:payload.trading_now,planning_to_trade:payload.planning_to_trade,
+    overall_risk:out.result&&out.result.summary&&out.result.summary.overall_risk},true);
+  // last_result isn't in the allow-listed snapshot fields above (kept small/
+  // frequent); send it in its own call so the full result is still on record
+  // without bloating every other event's payload.
+  ensureSession().then(function(id){ if(!id)return;
+    fetch(journeyBase()+'/session/event',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:id,event_type:'search_result',screen:'results',
+        payload:CONFIG.DEAL?{zoho_deal_id:CONFIG.DEAL}:{},
+        snapshot:{last_result:out.result,status:'search_completed'}}),
+      keepalive:true}).catch(()=>{});
+  });
+  pushScreen('results');
+}
+/* ── Class Builder: review & send ───────────────────────────────────────
+   The class tools' STANDALONE exit (Jonathan, 21 Aug). No register search:
+   /class-scope returns the application-grade selection (official headings +
+   registered-vocabulary terms) for the picked classes; the visitor amends
+   classes, descriptions and terms in place, then sends. */
+function rvErr(msg){const e=document.getElementById('rv-err');
+  e.textContent=msg; e.classList.toggle('hidden', !msg);}
+async function goToReview(){
+  if(!state.classes.length){
+    const e=document.getElementById('cls-gate');
+    if(e){e.textContent='Please add at least one class first — use the tools below if you are not sure which apply.';
+      e.classList.remove('hidden');}
+    return;
+  }
+  const base=(CONFIG.SEARCH_BASE||CONFIG.API_BASE||'').replace(/\/$/,'');
+  overlayOn('Building your class selection…','Pulling the official descriptions and registered terms.');
+  let out=null;
+  try{
+    const r=await fetch(base+'/class-scope',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:state.name,classes:state.classes,class_source:state.classSource})});
+    out=await r.json();
+  }catch(e){ out=null; }
+  finally{ await overlayOff(); }
+  state.review=(out&&out.ok&&Array.isArray(out.application_scope))?out.application_scope
+    :state.classes.map(n=>({n:+n,heading:'',terms:[]}));   // degrade: still editable
+  renderReview();
+  logEvent('screen_enter','review',{classes:state.classes},true);
+  pushScreen('review');
+}
+function renderReview(){
+  const host=document.getElementById('rv-list');
+  const esc=s=>String(s||'').replace(/</g,'&lt;');
+  const ta=(id,list,minR)=>`<textarea id="${id}" rows="${Math.min(14,Math.max(minR,(list||[]).length))}">${esc((list||[]).join('\n'))}</textarea>`;
+  host.innerHTML=(state.review||[]).map((r,i)=>{
+    const tt=r.term_tiers;
+    /* Tiered view (Jonathan, 22 Aug): everything included, grouped so the
+       obvious cuts are easy. Delete a line to drop a term. */
+    const termsHtml = tt
+      ? `<label>Definitely needed &mdash; core terms for this business</label>
+         ${ta('rv-t-'+r.n+'-def',tt.definite,3)}
+         <label>Possibly needed &mdash; delete any that don't apply</label>
+         ${ta('rv-t-'+r.n+'-pos',tt.possible,3)}
+         <label>Unlikely needed &mdash; keep only if they genuinely apply</label>
+         ${ta('rv-t-'+r.n+'-unl',tt.unlikely,2)}`
+      : `<label>Specific terms (one per line)</label>
+         ${ta('rv-t-'+r.n,r.terms,4)}`;
+    return `
+    <div class="rv-block" data-rv="${r.n}">
+      <div class="rv-head"><h3>Class ${r.n} &middot; ${classLabel(r.n)}</h3>
+        <button class="rv-x" onclick="rvRemove(${r.n})">Remove class</button></div>
+      <label>Class description</label>
+      <textarea id="rv-h-${r.n}" rows="2">${esc(r.heading)}</textarea>
+      ${termsHtml}
+    </div>`;}).join('');
+  /* Three exits from Review, mutually exclusive:
+     RETURN -> hand the selection back to the host page (Brand Audit)
+     DEAL   -> write it onto a Zoho Deal
+     else   -> email the visitor a CSV and make a Class Tools lead */
+  const ret=!!CONFIG.RETURN;
+  document.getElementById('rv-return-send').classList.toggle('hidden', !ret);
+  document.getElementById('rv-deal-send').classList.toggle('hidden', ret || !CONFIG.DEAL);
+  document.getElementById('rv-lead-send').classList.toggle('hidden', ret || !!CONFIG.DEAL);
+}
+function rvRemove(n){
+  state.review=(state.review||[]).filter(r=>r.n!==n);
+  state.classes=state.classes.filter(c=>+c!==+n);
+  renderBasket(); renderReview();
+}
+function collectReview(){
+  /* terms_source: "Approved" when the terms still match the register's
+     approved wording exactly (order included); "Custom Edited" the moment
+     the visitor changes anything. A resumed row that was already Custom
+     Edited stays Custom Edited even if unchanged this visit. */
+  return (state.review||[]).map(r=>{
+    const h=document.getElementById('rv-h-'+r.n);
+    const grab=id=>{const el=document.getElementById(id);
+      return el?el.value.split('\n').map(s=>s.trim()).filter(Boolean):null;};
+    let terms=grab('rv-t-'+r.n);
+    if(terms===null){ /* tiered layout: merge the three groups in order */
+      terms=[].concat(grab('rv-t-'+r.n+'-def')||[],
+                      grab('rv-t-'+r.n+'-pos')||[],
+                      grab('rv-t-'+r.n+'-unl')||[]);
+    }
+    const orig=(r.terms||[]).map(s=>String(s).trim()).filter(Boolean);
+    const same=terms.length===orig.length&&terms.every((x,i)=>x===orig[i]);
+    const src=(r.terms_source==='Custom Edited'||!same)?'Custom Edited':'Approved';
+    return {n:r.n, heading:(h?h.value.trim():r.heading)||'', terms:terms, terms_source:src};
+  }).filter(r=>r.terms.length||r.heading);
+}
+function rvDone(msg){
+  rvErr('');
+  const d=document.getElementById('rv-done');
+  d.textContent=msg; d.classList.remove('hidden');
+  document.getElementById('rv-deal-send').classList.add('hidden');
+  document.getElementById('rv-lead-send').classList.add('hidden');
+  const rs=document.getElementById('rv-return-send'); if(rs) rs.classList.add('hidden');
+}
+/* Return-to-caller: hand the reviewed selection to the host page (the Brand
+   Audit form) and write NOTHING to Zoho. The audit owns the submission, so
+   the builder must not create leads or deals on its way through. */
+function sendToCaller(){
+  const rows=collectReview();
+  if(!rows.length){ rvErr('Nothing to send — add at least one class with terms.'); return; }
+  const flat=[];
+  rows.forEach(r=>{ (r.terms||[]).forEach(t=>{ if(flat.indexOf(t)<0) flat.push(t); }); });
+  const msg={brauditClasses:{
+    name:state.name||'',
+    classes:rows.map(r=>r.n),
+    terms:flat,
+    scope:rows,
+    token:CONFIG.RETURN}};
+  try{ window.parent.postMessage(msg,'*'); }catch(e){}
+  rvDone('Added to your brand — you can close this and carry on.');
+}
+function sendToDeal(){
+  const rows=collectReview();
+  if(!rows.length){ rvErr('Nothing to send — add at least one class with terms.'); return; }
+  ensureSession().then(function(id){
+    if(!id){ rvErr('Could not reach the server — please try again.'); return; }
+    fetch(journeyBase()+'/session/event',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:id,event_type:'search_result',screen:'review',
+        payload:{zoho_deal_id:CONFIG.DEAL,sent_from:'class_builder'},
+        snapshot:{name:state.name,classes:rows.map(r=>r.n),class_source:state.classSource,
+                  last_result:{application_scope:rows},status:'class_builder_sent'}})})
+      .then(r=>r.json())
+      .then(d=>{ if(d&&d.ok) rvDone('Sent — the classes and terms are on the Deal in Zoho.');
+                 else rvErr('The send failed — please try again.'); })
+      .catch(()=>rvErr('The send failed — please try again.'));
+  });
+}
+function sendClassTools(){
+  const first=document.getElementById('rv-first').value.trim();
+  const last=document.getElementById('rv-last').value.trim();
+  const email=document.getElementById('rv-email').value.trim();
+  const phone=document.getElementById('rv-phone').value.trim();
+  const company=document.getElementById('rv-company').value.trim();
+  if(!first||!last||!email||!phone){ rvErr('First name, last name, email and mobile are all needed to send your classes.'); return; }
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){ rvErr('That email address does not look right.'); return; }
+  const rows=collectReview();
+  if(!rows.length){ rvErr('Nothing to send — add at least one class with terms.'); return; }
+  state.email=email; state.emailSource='class_tools';
+  ensureSession().then(function(id){
+    if(!id){ rvErr('Could not reach the server — please try again.'); return; }
+    fetch(journeyBase()+'/session/event',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:id,event_type:'lead_captured',screen:'review',
+        payload:{sent_from:'class_builder'},
+        snapshot:{name:state.name,classes:rows.map(r=>r.n),class_source:state.classSource,
+                  first_name:first,last_name:last,email:email,phone:phone,
+                  business_name:company||'',email_source:'class_tools',
+                  last_result:{application_scope:rows},status:'class_builder_sent'}})})
+      .then(r=>r.json())
+      .then(d=>{ if(d&&d.ok) rvDone('Done — your classes and terms are on their way to '+email+' as a CSV.');
+                 else rvErr('The send failed — please try again.'); })
+      .catch(()=>rvErr('The send failed — please try again.'));
+  });
+}
+/* In builder mode the classes screen's exit is Review, not a search. */
+if(BUILDER){
+  document.querySelectorAll('[data-screen="classes"] button').forEach(function(b){
+    if((b.getAttribute('onclick')||'')==='beginSearch()'){
+      b.textContent='Review classes & terms';
+      b.setAttribute('onclick','goToReview()');
+    }
+  });
+}
+async function callSearch(payload){
+  // The gated route. Falls back to API_BASE so local/dev still works.
+  const base=(CONFIG.SEARCH_BASE||CONFIG.API_BASE||'').replace(/\/$/,'');
+  const headers={'Content-Type':'application/json'};
+  if(state.jwt)headers['Authorization']='Bearer '+state.jwt;
+  try{
+    const r=await fetch(base+'/free-search',{method:'POST',headers,body:JSON.stringify(payload)});
+    return await r.json();
+  }catch(e){
+    return {ok:false,error:'The search service could not be reached. If you are testing locally, make sure the Launch Free Search window is still open.'};
+  }
+}
+
+
+
+function discJur(p){const nonUk=[...(p.trading_now||[]),...(p.planning_to_trade||[])].filter(x=>x!=='GB'&&x!=='UK');
+  const base='This free search covers the UK Intellectual Property Office register only. It does not check social media, online marketplaces, search engines, domain names, or company registers — and prior unregistered use can defeat an application even where the register is clear.';
+  if(!nonUk.length)return base;let bits=[];
+  if((p.trading_now||[]).length)bits.push('you currently trade in '+p.trading_now.join(', '));
+  if((p.planning_to_trade||[]).length)bits.push('you plan to trade in '+p.planning_to_trade.join(', '));
+  return 'You told us '+bits.join(' and ')+'. '+base+' A Brand Audit covers the full brand landscape across the territories that matter to you.';}
+
+/* Change spec 22 Aug §7: the headline, supporting message and CTA hierarchy
+   are all derived from ONE authoritative outcome computed here from the
+   engine's summary — the counts, the narrative and the buttons can never
+   disagree. Never declares a mark "clear", "available" or "safe". */
+function resultOutcome(s){
+  if(!s || s.truncated) return 'error';
+  if(s.high>0) return 'high';
+  if(s.medium>0) return 'medium';
+  if(s.total_flagged>0) return 'clean';
+  return 'none';
+}
+const OUTCOME_COPY={
+  high:['Potential conflicts found — review before applying',
+    'We found one or more closely related marks that may affect your application. Review the full results and speak with an adviser before proceeding.'],
+  medium:['Some potentially relevant marks need reviewing',
+    'We found one or more marks with meaningful similarities. This does not necessarily prevent an application, but their classes, wording and status should be assessed first.'],
+  clean:['No major conflicts found in this initial search',
+    'We found similar marks, but none currently score above low risk. Review the closest matches and your full report before deciding whether to apply.'],
+  none:['No close matches found in this initial search',
+    'That is encouraging, but register availability is only part of the assessment. Earlier unregistered use and activity outside the UK IPO register can still matter.'],
+  error:['We couldn’t complete the full register check',
+    'Part of the register search did not finish, so these results are incomplete and no risk score is shown. Please go back and run the search again, or call us on 0161 833 5400.']};
+function renderResults(r){const s=r.summary;
+  const outcome=resultOutcome(s);
+  const oc=OUTCOME_COPY[outcome];
+  document.getElementById('res-head').textContent=oc[0];
+  document.getElementById('res-sub').textContent=
+    `We searched the ${r.searched_office} register for “${r.query.word_marks[0]}”. `+oc[1];
+  // An incomplete search must never be presented as a low-risk result: no
+  // score, no opinion dial (spec §7 consistency rules).
+  r._outcome=outcome;
+  document.getElementById('res-summary').innerHTML=[['Flagged',s.total_flagged,''],['Shown here',s.displayed,''],
+    ['High risk',s.high,'high'],['Medium risk',s.medium,'med'],['Low risk',s.low,'low']]
+    .map(([k,v,cx])=>`<div class="stat ${cx}"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+  const tot=Math.max(1,s.high+s.medium+s.low);
+  document.getElementById('res-bar').style.display=s.total_flagged?'flex':'none';
+  document.getElementById('res-bar').innerHTML=
+    `<i style="width:${s.high/tot*100}%;background:var(--r-high)"></i>`+
+    `<i style="width:${s.medium/tot*100}%;background:var(--r-med)"></i>`+
+    `<i style="width:${s.low/tot*100}%;background:var(--r-low)"></i>`;
+  const rows=r.top_results.map(x=>{let co='';
+    if(x.company){const d=x.company.is_dissolved?`<span class="dead">${esc(x.company.status)}</span>`:esc(x.company.status);
+      co=`<div class="co">${d}${x.company.locality?' \u00b7 '+esc(x.company.locality):''}</div>`;}
+    const cls=(x.classes&&x.classes.length)?' \u00b7 Cl '+x.classes.join(', '):'';
+    return `<div class="rt-row">
+      <span><span class="band ${esc(x.risk).replace(' Risk','')}">${esc(x.risk).replace(' Risk','')}</span></span>
+      <span class="mk">${esc(x.mark)}</span>
+      <span class="ow">${(x.company_name||x.owner_name)?esc(x.company_name||x.owner_name)
+        :'<span class="ow-lock">Request report for owner details</span>'}${co}</span>
+      <span class="ty">${esc(x.type)}${cls}</span>
+      <span class="st">${esc(x.status)}</span></div>`;}).join('');
+  document.getElementById('res-rows').innerHTML=rows||
+    '<div style="padding:18px 20px;font-size:15px;color:var(--quiet)">Nothing live on the register looked close enough to list.</div>';
+  const bn=document.getElementById('res-barnote');
+  if(bn) bn.textContent=s.total_flagged
+    ? `${s.high} high, ${s.medium} medium and ${s.low} low risk across everything we flagged.`
+    : 'Nothing on the register conflicted with what you searched.';
+  document.getElementById('res-disclaimers').innerHTML=r.disclaimers.map(d=>`<div class="disc">${d}</div>`).join('');
+  renderOpinion(r);
+  renderNexts(r);
+}
+
+/* ── the opinion ────────────────────────────────────────────────────────
+   Every number and every sentence here was computed by the engine
+   (freesearch/viability.py, ported from the Industry Report's Tailored
+   Report). This function only paints them. Do NOT add scoring logic here:
+   the moment the browser can reach a different verdict from the server, the
+   screen and the emailed report start telling the visitor different things.
+
+   If an older engine responds without a `viability` block the whole section
+   hides rather than showing an empty dial. */
+const OP_COLOUR=v=>v>=70?'#2E7D32':(v>=45?'#E69500':'#C0392B');
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function renderOpinion(r){
+  const box=document.getElementById('res-opinion'), v=r.viability;
+  if(!v || r._outcome==='error'){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const body=(v.body||[]);
+  document.getElementById('op-dials').classList.remove('hidden');
+  const d=document.getElementById('op-dial');
+  d.style.setProperty('--v',v.score);
+  // Tier colour, NOT the score's own colour. A name can score 76 and still be
+  // one we've flagged for advice because of a close mark on the register; if
+  // the dial went green off its own number it would argue with the headline
+  // sitting next to it. The engine sends the colour for exactly this reason.
+  d.style.setProperty('--dc',v.colour||OP_COLOUR(v.score));
+  document.getElementById('op-val').textContent=v.score+'%';
+  document.getElementById('op-headline').textContent=v.headline||'';
+  // What the number measures, in the engine's words. It scores the NAME, not
+  // whether this exact word mark is free — which is why a strong brand owned
+  // by somebody else still scores well without the page contradicting itself.
+  const cap=document.getElementById('op-cap');
+  if(cap) cap.textContent=v.caption||'How strong the name looks in its own right.';
+  // The last paragraph is always the "this is not legal advice, book an
+  // appointment" line — styled quieter so it reads as a footnote and not as
+  // a retraction of everything above it.
+  document.getElementById('op-body').innerHTML=body.map((p,i)=>
+    `<p${i===body.length-1?' class="op-caveat"':''}>${esc(p)}</p>`).join('');
+  document.getElementById('op-dials').innerHTML=(v.dials||[]).map(x=>
+    // Each dial carries its own colour, read off its own value — a strength
+    // scoring 95 stays green even on a result we've banded crowded.
+    `<div class="subdial">
+      <div class="dial dial-sub" style="--v:${x.value};--dc:${x.colour||OP_COLOUR(x.value)}"><span class="val">${x.value}</span></div>
+      <div class="nm">${esc(x.label)}</div><div class="sb">${esc(x.sub)}</div></div>`).join('');
+}
+
+/* ── recommended next steps ──────────────────────────────────────────────
+   Both options are always shown. Which one gets the pink card is the
+   engine's call (`cta.lead`): a clean result leads with the application
+   because that is what most people want and it would be dishonest to push
+   an audit they don't need; a messy one leads with the audit because that
+   is the answer that actually saves them a filing fee. */
+function renderNexts(r){
+  /* Change spec 22 Aug §10: the CTA hierarchy is decided by the SAME
+     authoritative outcome as the headline (resultOutcome), not a separate
+     judgement — a low-risk result leads with the application, medium/high
+     lead with the Audit, and high risk stops visually encouraging the
+     application in favour of an adviser conversation. The Audit price stays
+     visible; the £99 credit is against TMH professional fees, said plainly;
+     the unevidenced "£299 value" framing is retired. */
+  const outcome=r._outcome||resultOutcome(r.summary);
+  const auditLabel = outcome==='high' ? 'Get a Brand Audit before applying — £99'
+    : outcome==='medium' ? 'Review the risks with a Brand Audit — £99'
+    : 'Start my Brand Audit — £99';
+  const auditBlurb='Go beyond the UK word-mark search. We’ll assess your name, logo '+
+    'and tagline across additional brand-risk sources and discuss the findings with you.';
+  const auditCredit='If you proceed with your application through TMH, the £99 Audit fee '+
+    'is credited in full against our professional application fees.';
+  const auditReassure='You’ll provide your details and choose an appointment before '+
+    'the Audit begins.';
+  const applyBlurb='Tell us about the applicant and the mark. You’ll then be able to '+
+    'book an appointment with our team before anything is filed.';
+  const lead=(outcome==='clean'||outcome==='none')?'application':'audit';
+  const audit=`<div class="nx${lead==='audit'?' lead-card':''}">
+    ${lead==='audit'?'<div class="eyebrow">Our recommended next step</div>':''}
+    <h4>Comprehensive Brand Audit — £99</h4>
+    <p>${esc(auditBlurb)}</p>
+    <div class="offer">${esc(auditCredit)}</div>
+    <button class="btn ${lead==='audit'?'primary':'ghost'} block" id="brand-audit-cta"
+      onclick="goToBrandAudit()">${esc(auditLabel)}</button>
+    <p class="sub" style="font-size:12.5px;margin-top:10px">${esc(auditReassure)}</p></div>`;
+  const applyGhost = outcome==='high';
+  const apply=`<div class="nx${lead==='application'?' lead-card':''}">
+    ${lead==='application'?'<div class="eyebrow">Our recommended next step</div>':''}
+    <h4>Proceed to application</h4>
+    <p>${esc(applyBlurb)}</p>
+    ${applyGhost?'<p class="sub" style="font-size:13px">With closely related marks on the register, we recommend a short adviser conversation before you file — call <b>0161 833 5400</b>.</p>':''}
+    <button class="btn ghost block"
+      onclick="goToApply()">Proceed to application</button></div>`;
+  // High/medium: audit first. Clean/none: application first (and it takes the
+  // primary styling via lead-card). Error: neither is pushed — retry instead.
+  if(outcome==='error'){
+    document.getElementById('res-nexts').innerHTML=
+      `<div class="nx"><h4>Run the search again</h4>
+        <p>The register check didn’t finish, so we can’t recommend a next step yet.</p>
+        <button class="btn primary block" onclick="history.back()">Back to classes — try again</button>
+        <p class="sub" style="font-size:13px;margin-top:10px">Or call us on 0161 833 5400 and we’ll run it with you.</p></div>`;
+    return;
+  }
+  // Give the application card the primary button when it leads.
+  const applyLead=apply.replace('btn ghost block','btn primary block');
+  document.getElementById('res-nexts').innerHTML=
+    lead==='audit' ? audit+apply : applyLead+audit;
+}
+function goToApply(){
+  logEvent('apply_clicked','results',
+    {score:(state.lastResult&&state.lastResult.viability||{}).score||null},false);
+  // Same sendBeacon reasoning as goToBrandAudit(): the page is about to go.
+  if(state.sessionId && navigator.sendBeacon){
+    try{ navigator.sendBeacon(journeyBase()+'/session/event',
+      new Blob([JSON.stringify({session_id:state.sessionId,
+        event_type:'apply_clicked',screen:'results',payload:{},
+        snapshot:{status:'apply_clicked'}})],{type:'application/json'})); }catch(e){}
+  }
+  window.open(CONFIG.APPLY_URL,'_blank','noopener');
+}
+
+/* The free-search allowance is used up. Show what they get for signing up
+   rather than what they have lost — the account IS the lead gate, moved
+   earlier and OTP-verified, so this screen is the conversion, not a wall. */
+function showAccountGate(out){
+  const su=out.signup||{};
+  const benefits=(su.benefits||['Unlimited free UK searches',
+    'Full conflict list with ownership detail','Access the Temmy Portal']);
+  const host=document.querySelector('[data-screen="classes"] .actions');
+  const box=document.getElementById('cls-gate');
+  if(box){
+    box.classList.remove('hidden');
+    box.innerHTML=`<div class="gatebox">
+      <b>${esc(out.message||'Create a free account to keep searching.')}</b>
+      <ul>${benefits.map(b=>`<li>${esc(b)}</li>`).join('')}</ul>
+      <button class="btn primary" onclick="createPortal()">Create my free account</button>
+    </div>`;
+    box.scrollIntoView({behavior:'smooth',block:'center'});
+  }
+  logEvent('account_gate_shown','classes',{},false);
+}
+
+/* soft lead capture -> portal offer */
+function sendReport(){
+  const first=document.getElementById('r-first').value.trim();
+  const last=document.getElementById('r-last').value.trim();
+  const email=document.getElementById('r-email').value.trim();
+  const phone=document.getElementById('r-phone').value.trim();
+  if(!first||!last||!email||!/.+@.+\..+/.test(email)||!phone){
+    const e=document.getElementById('r-err');e.textContent='Please enter your name, a valid email and a phone number.';
+    e.classList.remove('hidden');return;}
+  document.getElementById('r-err').classList.add('hidden');
+  const biz=document.getElementById('r-biz').value.trim()||null;
+  state.email=email; state.emailSource='report_form';   // stronger than ai_gate
+  state.lead={first_name:first,last_name:last,email,phone,business_name:biz,
+    trading_now:nowCodes(),planning_to_trade:planCodes(),tenant_id:CONFIG.TENANT_ID};
+  // The lead moment — this is what Brand Audit will pre-fill its contact
+  // step from if the visitor continues there. Logged + snapshotted
+  // immediately, not deferred to whatever eventually sends the email.
+  logEvent('lead_captured','results',{email:email},false);
+  ensureSession().then(function(id){ if(!id)return;
+    fetch(journeyBase()+'/session/event',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:id,event_type:'lead_captured',screen:'results',payload:{},
+        snapshot:{first_name:first,last_name:last,email:email,phone:phone,
+                  business_name:biz,status:'lead_captured'}}),
+      keepalive:true}).catch(()=>{});
+  });
+  /* LIVE: POST the lead + report request to the Edge Function (Zoho + email).
+     ⚠ When this is wired up: someone can now legitimately go back to Results
+     and press "Send my report" a second time (e.g. to fix a typo'd email).
+     Make that POST idempotent per report/session, the same lesson the
+     Industry Report tool already learned the hard way — see its build doc. */
+  // Direct link to the unique full-report page (spec §6: the emailed report
+  // and this page are the same complete result set).
+  const prl=document.getElementById('portal-report-link');
+  if(prl && state.sessionId){
+    prl.href='https://www.thetrademarkhelpline.com/search-report/?fs='+
+      encodeURIComponent(state.sessionId);
+  }
+  pushScreen('portal');
+}
+function createPortal(){
+  if(state.portalRequested){ finish(true); return; } // already actioned this visit — don't double-fire on back+retry
+  state.portalRequested=true;
+  logEvent('portal_requested','portal',{},false);
+  /* LIVE: create Temmy Portal account (email OTP) + Zoho contact. */
+  finish(true);
+}
+function finish(withAccount){
+  document.getElementById('done-head').textContent=withAccount?'You’re all set 🎉':'Report sent';
+  document.getElementById('done-msg').textContent=withAccount
+    ?`Your report is on its way to ${state.lead.email}, and your free Temmy Portal login is being set up. Check your inbox to verify your email.`
+    :`Your full report is on its way to ${state.lead.email}. You can create a free Temmy Portal login any time.`;
+  pushScreen('done');
+}
+
+function resetAll(){
+  // Log the restart BEFORE the session is discarded, or it is written against
+  // nothing. Someone who searches four names in a visit used to look identical
+  // to someone who searched once and left — and repeat searching is one of the
+  // stronger buying signals we have. Carries what they were looking at when
+  // they went again, so a restart after a bad result is distinguishable from a
+  // restart after a good one.
+  const prev=state.lastResult||null, v=(prev&&prev.viability)||{};
+  if(state.sessionId){
+    logEvent('search_restarted','results',{
+      previous_name:state.name||'',
+      previous_score:(typeof v.score==='number')?v.score:null,
+      previous_tier:v.tier||'',
+      previous_flagged:(prev&&prev.summary&&prev.summary.total_flagged)||0,
+      searched:!!prev},false);
+  }
+  state={name:'',logo:false,logoLater:false,tagline:'',classes:[],
+  now:{mode:'uk',codes:[]},plan:{mode:'none',codes:[]},lastResult:null,lead:null,
+  emailForAI:null,classSource:null,resultsComputedFrom:null,portalRequested:false,
+  sessionId:null,businessWebsite:'',channels:null,email:'',emailSource:''};  // a new search is a genuinely new journey, not a continuation
+  ['name','tagline','r-first','r-last','r-email','r-phone','r-biz'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
+  document.getElementById('tick-logo').classList.remove('on');document.getElementById('tick-tag').classList.remove('on');
+  document.getElementById('plan-block').classList.add('hidden');
+  document.getElementById('now-continue').classList.remove('hidden');
+  // reset class-help panel
+  toggleHelp(false);
+  document.querySelectorAll('.help-opt').forEach(o=>o.classList.remove('open'));
+  document.querySelectorAll('.ho-body').forEach(b=>{b.innerHTML='';b.removeAttribute('data-built');});
+  setMode('now','uk');setPlanMode('none');renderBasket();pushScreen('search');}
+
+/* init */
+document.getElementById('name').addEventListener('keydown',e=>{if(e.key==='Enter')go('marks');});
+document.getElementById('logo-later').addEventListener('change',e=>state.logoLater=e.target.checked);
+renderClassList();renderBasket();
+// Seed the history stack so the very first Back press behaves predictably
+// (leaves the tool, same as any normal page one click deep) rather than
+// erroring on a popstate with no prior entry.
+history.replaceState({screen:'search'},'','#search');
+window.addEventListener('popstate',function(e){
+  const id=(e.state&&e.state.screen)||(location.hash||'').replace('#','')||'search';
+  renderScreen(id);
+});
+
+/* ── Hand-off from the compact search-box widget ─────────────────────────
+   The box already minted the session and logged 'name_submitted', so we
+   ADOPT its session_id rather than minting a second one — otherwise one
+   visitor would leave two journey_sessions rows and, later, two Zoho Leads.
+   Adopting means simply setting state.sessionId before anything else runs:
+   ensureSession() is idempotent and returns early when it's already set.
+
+   The name is read back from the session snapshot (the box wrote it there),
+   falling back to the ?q= parameter when there was no session to write to.
+   If neither is available we just open on step 1 as normal — a broken
+   hand-off should degrade to the ordinary journey, never to a dead end. */
+(function resumeFromSearchBox(){
+  const wanted = CONFIG.RESUME_SCREEN;
+  if(!CONFIG.RESUME_SESSION && !CONFIG.RESUME_NAME){ renderScreen('search'); return; }
+
+  function open(name, sess){
+    if(!name){ renderScreen('search'); return; }
+    state.name = name;
+    document.getElementById('name').value = name;
+    const wm = document.getElementById('word-mark');
+    if(wm) wm.value = name;
+    document.getElementById('tick-name').classList.add('on');
+    let target = wanted || (BUILDER ? 'classes' : (QUICK ? 'classes' : 'marks'));
+    /* Builder resume (the Lead's report URL / re-opened session): re-open
+       the review screen from the stored selection. */
+    if(BUILDER && target === 'review'){
+      const lr = sess && sess.last_result;
+      if(lr && Array.isArray(lr.application_scope) && lr.application_scope.length){
+        if(Array.isArray(sess.classes)) state.classes = sess.classes.map(Number).filter(n=>n>=1&&n<=45);
+        state.review = lr.application_scope;
+        renderBasket(); renderReview();
+      } else { target = 'classes'; }
+    }
+    /* Report-link resume (Jonathan, 21 Aug): the "Free Search Report URL"
+       on the Zoho Lead points at ?s=SESSION&screen=results — re-open the
+       visitor's ACTUAL results screen from the stored search result, so a
+       rep sees the report exactly as the client did. Degrades to the
+       normal journey when the session has no stored result. */
+    if(target === 'results'){
+      const lr = sess && sess.last_result;
+      if(lr && lr.summary){
+        try{
+          if(Array.isArray(sess.classes) && sess.classes.length){
+            state.classes = sess.classes.map(Number).filter(n=>n>=1&&n<=45);
+            renderBasket();
+          }
+          state.lastResult = lr;
+          renderResults(lr);
+        }catch(e){ target = QUICK ? 'classes' : 'marks'; }
+      } else {
+        target = QUICK ? 'classes' : 'marks';
+      }
+    }
+    renderScreen(target);
+    history.replaceState({screen:target},'','#'+target);
+    // Deliberately NOT re-logging 'name_submitted' — the box already did.
+    logEvent('screen_enter', target, {resumed_from:'search_box'}, false);
+  }
+
+  if(CONFIG.RESUME_SESSION){
+    state.sessionId = CONFIG.RESUME_SESSION;   // adopt, don't mint
+    fetch(journeyBase()+'/session?id='+encodeURIComponent(CONFIG.RESUME_SESSION))
+      .then(r=>r.json())
+      .then(d=>{ open((d && d.ok && d.session && d.session.name) || CONFIG.RESUME_NAME,
+                      d && d.ok ? d.session : null); })
+      .catch(()=>open(CONFIG.RESUME_NAME));
+  } else {
+    open(CONFIG.RESUME_NAME);
+  }
+})();
+/* The step-1 placeholder types itself out, as on the homepage. Skipped for
+   anyone who has asked for reduced motion, and it never touches the field
+   once the visitor starts typing. */
+(function typePlaceholder(){
+  const el=document.getElementById('name');
+  if(!el || el.value) return;
+  const full='Type your Trademark Name and click Search';
+  if(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches){
+    el.placeholder=full; return; }
+  let i=0; el.placeholder='';
+  const t=setInterval(function(){
+    if(el.value || i>=full.length){ clearInterval(t); if(!el.value) el.placeholder=full; return; }
+    el.placeholder=full.slice(0,++i);
+  },55);
+})();
+document.getElementById('modeflag').textContent =
+  location.protocol==='file:' ? '● NOT CONNECTED — open via the Launch Free Search app, not the file'
+  : '● LIVE' + (CONFIG.API_BASE ? ': '+CONFIG.API_BASE : '');
+</script>
+<script>
+if (window.parent !== window) {
+  var _pushH=function(){parent.postMessage({brauditHeight:document.body.scrollHeight},'*');};
+  new ResizeObserver(_pushH).observe(document.body); _pushH();
+}
+</script>
+</body>
+</html>
