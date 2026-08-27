@@ -280,6 +280,71 @@ def _static(path: str):
         return (None, ctype)
 
 
+def _audit_pay(payload: dict) -> dict:
+    """Create a Stripe Checkout session for the audit checkout's
+    "over the phone now" option (Jonathan, 27 Aug).
+
+    The AMOUNT IS COMPUTED HERE, never trusted from the browser: £99 net
+    always (the Audit Promotion discount is applied upstream in the page's
+    display), plus 20% VAT unless the applicant is a non-UK organisation or
+    non-UK individual (vat_exempt). The consultation is free either way, so
+    consult only changes the line-item description, not the price.
+
+    Needs STRIPE_SECRET_KEY in the environment (Render env var — the value
+    lives in temmy-access/secrets.env, never in this repo). Unset -> the
+    page falls back to "we'll call you to take payment".
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    sk = (os.environ.get('STRIPE_SECRET_KEY') or '').strip()
+    if not sk:
+        return {'ok': False, 'error': 'payment not configured', 'status': 200}
+
+    vat_exempt = bool(payload.get('vat_exempt'))
+    consult = bool(payload.get('consult'))
+    ref = str(payload.get('ref') or '')[:40]
+    email = str(payload.get('email') or '')[:200]
+    net_p = 9900                                   # £99.00 net, always
+    total = net_p if vat_exempt else int(round(net_p * 1.20))
+    name = ('Trademark Audit & Consultation' if consult else 'Trademark Audit')
+    desc = 'Audit Promotion applied' + (' — VAT not applicable (outside UK)'
+                                        if vat_exempt else ' — includes VAT @ 20%')
+    form = {
+        'mode': 'payment',
+        'client_reference_id': ref or 'AUD',
+        'success_url': 'https://www.thetrademarkhelpline.com/?audit_paid=1',
+        'cancel_url': 'https://www.thetrademarkhelpline.com/?audit_paid=0',
+        'line_items[0][quantity]': '1',
+        'line_items[0][price_data][currency]': 'gbp',
+        'line_items[0][price_data][unit_amount]': str(total),
+        'line_items[0][price_data][product_data][name]': name,
+        'line_items[0][price_data][product_data][description]': desc,
+        'metadata[invoice_ref]': ref,
+        'metadata[session_id]': str(payload.get('session_id') or '')[:60],
+    }
+    if email:
+        form['customer_email'] = email
+    req = urllib.request.Request(
+        'https://api.stripe.com/v1/checkout/sessions',
+        data=urllib.parse.urlencode(form).encode(),
+        headers={'Authorization': 'Bearer ' + sk,
+                 'Content-Type': 'application/x-www-form-urlencoded'})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+        return {'ok': True, 'url': data.get('url'), 'status': 200}
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode()).get('error', {}).get('message', '')
+        except Exception:
+            err = str(e)
+        return {'ok': False, 'error': f'stripe: {err[:200]}', 'status': 200}
+    except Exception as e:
+        return {'ok': False, 'error': f'stripe unreachable: {e}', 'status': 200}
+
+
 def _allowed_origin(origin: str) -> str:
     """CORS allow-list from env. ALLOWED_ORIGINS unset -> '*' (dev only);
     set it to a comma-separated list in production (TMH, portal, partners)."""
@@ -392,7 +457,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.rstrip('/')
         if path not in ('/free-search', '/enrich', '/suggest-classes', '/read-website',
-                        '/class-scope'):
+                        '/class-scope', '/audit-pay'):
             self._send({'ok': False, 'error': 'not found'}, 404)
             return
         if not self._engine_key_ok():
@@ -414,7 +479,9 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             self._send({'ok': False, 'error': 'invalid JSON'}, 400)
             return
-        if path == '/enrich':
+        if path == '/audit-pay':
+            out = _audit_pay(payload)
+        elif path == '/enrich':
             out = handle_enrich(payload)
         elif path == '/suggest-classes':
             out = handle_suggest_classes(payload)
