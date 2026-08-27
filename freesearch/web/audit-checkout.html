@@ -1,0 +1,1243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trademark Audit — The Trademark Helpline</title>
+<link rel="stylesheet" href="/braudit.css">
+<style>
+  /* ============================================================
+     AUDIT CHECKOUT (Version 1 — post-search client journey).
+     Spec: Jonathan 27 Aug 2026. Follows Free/Quick Search and
+     pre-populates from the journey session (?s= / ?fs=).
+     The multi-brand internal audit tool (brand-audit.html) is
+     PARKED and untouched — this is the client-facing flow.
+     ============================================================ */
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--font);color:var(--ink);background:var(--bg);
+    line-height:1.5;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:24px 18px 64px}
+  .brand{display:flex;align-items:center;gap:14px;padding:8px 2px 20px}
+  .brand .logo{width:46px;height:46px;border-radius:12px;background:var(--pink);
+    display:grid;place-items:center;color:#fff;font-weight:800;font-size:20px;box-shadow:var(--shadow)}
+  .brand h1{font-size:19px;margin:0;color:var(--navy);font-weight:800;letter-spacing:.2px}
+  .brand small{display:block;color:var(--pink);font-weight:700;font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+
+  .steps{display:flex;gap:4px;margin:0 0 20px;flex-wrap:wrap}
+  .steps .s{flex:1;min-width:64px;font-size:10.5px;font-weight:700;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.05em;padding:8px 2px;border-top:3px solid var(--line);text-align:center}
+  .steps .s.active{color:var(--navy);border-top-color:var(--pink)}
+  .steps .s.done{color:var(--navy);border-top-color:var(--navy)}
+
+  .card{background:var(--white);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:28px;margin-bottom:18px}
+  .subcard{background:#fbfcfd;border:1.5px dashed var(--line);border-radius:12px;padding:18px;margin-top:14px}
+  h2{color:var(--navy);font-size:22px;margin:0 0 6px}
+  h3{color:var(--navy);margin:18px 0 8px}
+  .lead{color:var(--muted);margin:0 0 20px}
+  .aboutbox{border-left:4px solid var(--pink);background:#fef7f9;border-radius:0 12px 12px 0;
+    padding:16px 20px;margin:0 0 22px}
+  .aboutbox h4{margin:0 0 4px;color:var(--navy);font-size:15px}
+  .aboutbox p{margin:0 0 12px;font-size:14px;color:#33424f}
+  .aboutbox p:last-child{margin-bottom:0}
+
+  label.fld{display:block;font-weight:700;color:var(--navy);margin:14px 0 6px;font-size:14px}
+  label.fld .req{color:var(--pink)}
+  label.fld .opt{color:var(--muted);font-weight:500;font-size:12px}
+  input[type=text],input[type=email],input[type=tel],input[type=url],input[type=date],textarea,select{
+    width:100%;padding:13px 14px;border:1.5px solid var(--line);border-radius:10px;
+    font-size:15px;font-family:inherit;color:var(--ink);background:#fff}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--pink);box-shadow:0 0 0 3px rgba(229,22,82,.12)}
+  textarea{min-height:74px;resize:vertical}
+
+  .btn{appearance:none;border:0;border-radius:10px;padding:14px 26px;font-size:15px;font-weight:700;
+    cursor:pointer;font-family:inherit;transition:.15s}
+  .btn.primary{background:var(--pink);color:#fff}
+  .btn.primary:hover{background:var(--pink-dark)}
+  .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--line)}
+  .btn.ghost:hover{border-color:var(--navy)}
+  .btn.small{padding:9px 16px;font-size:13px}
+  .actions{display:flex;justify-content:space-between;gap:12px;margin-top:24px;align-items:center}
+  .link{color:var(--pink);font-weight:700;cursor:pointer;background:none;border:0;font-size:14px;padding:0}
+  .link:hover{text-decoration:underline}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:640px){.cols{grid-template-columns:1fr}}
+  .err{color:#c0392b;font-size:13px;margin-top:8px;font-weight:600}
+  .hidden{display:none!important}
+  .muted-note{color:var(--muted);font-size:13px;margin-top:8px}
+
+  /* ticks / option rows */
+  .tick{display:flex;gap:13px;align-items:flex-start;padding:15px;border:1.5px solid var(--line);
+    border-radius:12px;margin-bottom:12px;cursor:pointer;transition:.15s;background:#fff}
+  .tick:hover{border-color:var(--navy-soft)}
+  .tick.on{border-color:var(--pink);background:#fef4f7}
+  .tick .box{width:22px;height:22px;border-radius:6px;border:2px solid var(--line);display:grid;
+    place-items:center;flex:none;margin-top:1px;font-size:14px;color:#fff}
+  .tick.on .box{background:var(--pink);border-color:var(--pink)}
+  .tick .t{font-weight:700;color:var(--navy)}
+  .tick .sub{color:var(--muted);font-size:13px;margin-top:2px}
+  .tick .drawer{margin-top:12px;display:none;width:100%}
+  .tick.on .drawer{display:block}
+  .tick.locked{cursor:default;border-color:var(--navy);background:#f4f7fa}
+  .tick.locked .box{background:var(--navy);border-color:var(--navy)}
+  .lockbadge{font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;
+    color:#fff;background:var(--navy);border-radius:6px;padding:2px 8px;margin-left:8px}
+
+  /* platform grid */
+  .plat{display:flex;gap:12px;align-items:flex-start;padding:13px 15px;border:1.5px solid var(--line);
+    border-radius:12px;margin-bottom:10px;background:#fff}
+  .plat .pbox{width:20px;height:20px;border-radius:6px;border:2px solid var(--line);display:grid;
+    place-items:center;flex:none;margin-top:2px;font-size:12px;color:#fff;cursor:pointer}
+  .plat.on{border-color:var(--pink);background:#fef4f7}
+  .plat.on .pbox{background:var(--pink);border-color:var(--pink)}
+  .plat .pt{font-weight:700;color:var(--navy);cursor:pointer}
+  .plat .purl{margin-top:8px;display:none}
+  .plat.on .purl{display:block}
+  .radio-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:13px}
+  .radio-row label{display:flex;gap:6px;align-items:center;cursor:pointer;color:#33424f}
+  .radio-row input{accent-color:var(--pink)}
+
+  /* jurisdictions */
+  .seg{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .seg .opt{padding:11px 16px;border:1.5px solid var(--line);border-radius:10px;cursor:pointer;
+    font-weight:700;color:var(--navy);background:#fff}
+  .seg .opt.on{border-color:var(--pink);background:var(--pink);color:#fff}
+  .pop{display:flex;flex-wrap:wrap;gap:8px;margin:6px 0 4px}
+  .pop .c{padding:9px 14px;border:1.5px solid var(--line);border-radius:999px;cursor:pointer;
+    font-weight:600;font-size:14px;color:var(--navy);background:#fff}
+  .pop .c.on{border-color:var(--pink);background:#fef4f7;color:var(--pink)}
+  .group-title{font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:16px 0 4px}
+
+  /* classes basket + terms */
+  .chip{display:inline-flex;align-items:center;gap:8px;background:#fef4f7;color:var(--navy);
+    border:1px solid #f6c9d6;border-radius:999px;padding:6px 12px;margin:4px 4px 0 0;font-size:13px;font-weight:600}
+  .chip b{color:var(--pink)}
+  .basket{border:1.5px solid var(--line);border-radius:12px;padding:12px;min-height:56px;margin-bottom:8px}
+  .clsrow{border:1.5px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+  .clsrow .h{font-weight:800;color:var(--navy)}
+  .clsrow .h .n{color:var(--pink)}
+  .clsrow textarea{margin-top:8px;font-size:13.5px;min-height:60px}
+  .listbox{border:1.5px solid var(--line);border-radius:12px;max-height:230px;overflow:auto;background:#fff}
+  .listbox .row{padding:11px 13px;border-bottom:1px solid var(--line);cursor:pointer}
+  .listbox .row:hover{background:#fef4f7}
+  .listbox .row:last-child{border-bottom:0}
+  .listbox .cn{font-weight:700;color:var(--navy)}
+  .listbox .cm{color:var(--muted);font-size:12.5px}
+
+  /* class tools overlay (same-origin iframe, proven pattern) */
+  #tools-ov{position:fixed;inset:0;background:rgba(28,45,59,.55);z-index:60;display:flex;
+    align-items:flex-start;justify-content:center;padding:20px}
+  #tools-ov .tv{background:#fff;border-radius:14px;width:min(980px,100%);height:calc(100vh - 40px);
+    display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,.3)}
+  #tools-ov .tv .bar{display:flex;justify-content:space-between;align-items:center;padding:12px 18px;
+    border-bottom:1px solid var(--line)}
+  #tools-ov iframe{border:0;flex:1;width:100%}
+  body.embedded #tools-ov{position:absolute;height:100vh}
+
+  /* consultation + summary */
+  .choice{border:2px solid var(--line);border-radius:14px;padding:20px;margin-bottom:14px;cursor:pointer;transition:.15s}
+  .choice:hover{border-color:var(--navy-soft)}
+  .choice.on{border-color:var(--pink);background:#fef4f7}
+  .choice .t{font-weight:800;color:var(--navy);font-size:16px}
+  .choice .sub{color:var(--muted);font-size:13.5px;margin-top:4px}
+  .value-flag{display:inline-block;background:var(--navy);color:#fff;font-size:11px;font-weight:800;
+    border-radius:6px;padding:3px 9px;margin-left:8px;letter-spacing:.04em}
+  .sumsec{border-bottom:1px solid var(--line);padding:14px 0}
+  .sumsec:last-of-type{border-bottom:0}
+  .sumsec .sh{display:flex;justify-content:space-between;align-items:baseline}
+  .sumsec h4{margin:0;color:var(--navy);font-size:14px;text-transform:uppercase;letter-spacing:.06em}
+  .sumsec .body{font-size:14px;color:#33424f;margin-top:6px}
+  .totals{margin-top:18px;border:1.5px solid var(--line);border-radius:12px;overflow:hidden}
+  .totals .tr{display:flex;justify-content:space-between;padding:11px 16px;font-size:14.5px;border-bottom:1px solid var(--line)}
+  .totals .tr:last-child{border-bottom:0}
+  .totals .tr.disc{color:#2f6b23;font-weight:700}
+  .totals .tr.grand{background:var(--navy);color:#fff;font-weight:800;font-size:16px}
+  .done-mark{width:64px;height:64px;border-radius:50%;background:var(--r-low);color:#2f6b23;display:grid;
+    place-items:center;font-size:34px;margin:0 auto 14px}
+  .bookframe{border:1.5px solid var(--line);border-radius:12px;overflow:hidden;margin-top:14px}
+  .bookframe iframe{width:100%;height:640px;border:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <div class="logo">TH</div>
+    <div><small>The Trademark Helpline</small><h1>Trademark Audit</h1></div>
+  </div>
+
+  <div class="steps" id="steps"></div>
+
+  <!-- ============ PAGE 1 — CONTACT (capture lead) ============ -->
+  <section class="card" data-screen="contact">
+    <div class="aboutbox">
+      <h4>About our Trademark Audit Service</h4>
+      <p><b>When do you need a trademark audit?</b><br>
+        Trademark Audits are most commonly used before making a trademark application, as a
+        Trademark Healthcheck, when looking to make changes to an existing trademark (for
+        example, adding or removing goods and services your trademark is registered for
+        (Classes &amp; Terms), expanding into other territories &amp; jurisdictions) or when
+        your trademark is coming up for renewal.</p>
+      <p><b>How does it help you?</b><br>
+        The purpose of a Trademark Audit is to avoid wasting money on failed application fees
+        by giving you all the information you need to make educated choices about your
+        trademark before committing to paying any official fees to trademark registers such as
+        the UK Intellectual Property Office, as those fees are non-refundable.</p>
+    </div>
+
+    <h2>Firstly, who will be the person we will be dealing with for the trademark audit?</h2>
+    <div class="cols">
+      <div><label class="fld">First Name <span class="req">*</span></label>
+        <input type="text" id="c-first" autocomplete="given-name"></div>
+      <div><label class="fld">Last Name <span class="req">*</span></label>
+        <input type="text" id="c-last" autocomplete="family-name"></div>
+      <div><label class="fld">Email Address <span class="req">*</span></label>
+        <input type="email" id="c-email" autocomplete="email"></div>
+      <div><label class="fld">Phone Number <span class="req">*</span></label>
+        <input type="tel" id="c-phone" autocomplete="tel"></div>
+    </div>
+    <div class="err hidden" id="c-err"></div>
+    <div class="actions"><span></span>
+      <button class="btn primary" onclick="submitContact()">Begin Audit</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 2 — SEARCHES ============ -->
+  <section class="card hidden" data-screen="searches">
+    <h2>What shall we search?</h2>
+    <p class="lead">Your name is in from your search. Add a logo or tagline and they&rsquo;ll be
+      covered by your audit too.</p>
+
+    <label class="fld">Name</label>
+    <input type="text" id="s-name" placeholder="Your brand name">
+
+    <div class="tick" id="s-logo" onclick="toggleLogo(event)">
+      <div class="box">&#10003;</div>
+      <div style="flex:1"><div class="t">Logo</div>
+        <div class="sub">Your logo is reviewed as part of the audit &mdash; including against
+          figurative marks on the register.</div>
+        <div class="drawer" onclick="event.stopPropagation()">
+          <div class="radio-row">
+            <label><input type="radio" name="logo-how" value="url" checked> I&rsquo;ll paste a link to it</label>
+            <label><input type="radio" name="logo-how" value="later"> I&rsquo;ll send it later</label>
+          </div>
+          <input type="url" id="s-logo-url" placeholder="https:// link to your logo (website, Dropbox, Drive…)" style="margin-top:8px">
+        </div>
+      </div>
+    </div>
+
+    <div class="tick" id="s-tag" onclick="toggleTag(event)">
+      <div class="box">&#10003;</div>
+      <div style="flex:1"><div class="t">Tagline</div>
+        <div class="sub">Searched as words, same as a name &mdash; and potentially a separate
+          mark of its own.</div>
+        <div class="drawer" onclick="event.stopPropagation()">
+          <input type="text" id="s-tagline" placeholder="Add your tagline here">
+        </div>
+      </div>
+    </div>
+
+    <div class="err hidden" id="s-err"></div>
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitSearches()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 3 — JURISDICTIONS ============ -->
+  <section class="card hidden" data-screen="jurisdiction">
+    <h2>Where do you trade?</h2>
+    <p class="lead">Your audit covers the registers for every country you trade in today and
+      everywhere you plan to trade next.</p>
+
+    <h3 style="margin-top:4px">Where do you trade today?</h3>
+    <div class="seg">
+      <div class="opt on" id="now-uk" onclick="setMode('now','uk')">UK only</div>
+      <div class="opt" id="now-select" onclick="setMode('now','select')">Select countries</div>
+    </div>
+    <div id="pick-now"></div>
+
+    <h3>And where do you plan to trade next?</h3>
+    <div class="seg">
+      <div class="opt on" id="plan-none" onclick="setMode('plan','none')">No plans beyond where I am now</div>
+      <div class="opt" id="plan-select" onclick="setMode('plan','select')">I&rsquo;m looking further afield</div>
+    </div>
+    <div id="pick-plan" class="hidden"></div>
+
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitJurisdictions()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 4 — CLASSES & DESCRIPTIONS ============ -->
+  <section class="card hidden" data-screen="classes">
+    <h2>Classes &amp; descriptions</h2>
+    <p class="lead" id="cls-lead">These came through from your search. Review the wording,
+      remove anything that doesn&rsquo;t apply, or reopen the class tools to change your classes.</p>
+
+    <div class="basket" id="cls-basket"><span class="muted-note">No classes yet &mdash; use the
+      class tools below.</span></div>
+    <button class="btn ghost" id="cls-tools-btn" onclick="openClassTools()">Choose classes &amp; terms &rarr;</button>
+
+    <div id="cls-rows" style="margin-top:16px"></div>
+
+    <div class="err hidden" id="cls-err"></div>
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitClasses()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 5 — PLATFORMS ============ -->
+  <section class="card hidden" data-screen="platforms">
+    <h2>Confirm what we&rsquo;ll audit</h2>
+    <p class="lead">Everything below is pre-selected from what you&rsquo;ve told us &mdash; make
+      any changes you need before we lock in the audit.</p>
+
+    <h3>Intellectual Property Offices</h3>
+    <p class="muted-note" style="margin:0 0 10px">The trademark registers for everywhere you
+      trade now and plan to trade.</p>
+    <div id="ipo-list"></div>
+
+    <h3>UK Companies House <span class="lockbadge">Included</span></h3>
+    <div class="subcard">
+      <label class="fld" style="margin-top:0">Add your UK organisation
+        <span class="opt">&mdash; we&rsquo;ll exclude it from conflict results</span></label>
+      <input type="text" id="ch-q" placeholder="Search Companies House by name or number"
+             oninput="chSearch()" autocomplete="off">
+      <div class="listbox hidden" id="ch-results"></div>
+      <div class="chip hidden" id="ch-picked" style="margin-top:10px"></div>
+      <div class="radio-row" style="margin-top:10px">
+        <label><input type="checkbox" id="ch-none" onchange="chNone()"> I do not have a
+          registered company</label>
+      </div>
+    </div>
+
+    <h3>Domain Registers <span class="lockbadge">Included</span></h3>
+    <div class="subcard">
+      <label class="fld" style="margin-top:0">Add your domain name
+        <span class="opt">&mdash; excluded from results</span></label>
+      <input type="text" id="dom-in" placeholder="e.g. yourbrand.co.uk">
+      <div class="radio-row" style="margin-top:10px">
+        <label><input type="checkbox" id="dom-none"> I don&rsquo;t have a domain name</label>
+      </div>
+    </div>
+
+    <h3>Social Media Platforms</h3>
+    <div class="radio-row" style="margin-bottom:10px">
+      <label><input type="checkbox" id="soc-all" onchange="allPlatforms('soc',this.checked)">
+        <b>Include all social platforms</b></label>
+    </div>
+    <div id="soc-list"></div>
+
+    <h3>Online Shopping Platforms</h3>
+    <div class="radio-row" style="margin-bottom:10px">
+      <label><input type="checkbox" id="shop-all" onchange="allPlatforms('shop',this.checked)">
+        <b>Include all shopping platforms</b></label>
+    </div>
+    <div id="shop-list"></div>
+
+    <div class="err hidden" id="p-err"></div>
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitPlatforms()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 6 — CONSULTATION ============ -->
+  <section class="card hidden" data-screen="consult">
+    <h2>Free Consultation <span class="value-flag">WORTH &pound;149</span></h2>
+    <p class="lead">Your Audit comes with a Free Consultation with one of our expert trademark
+      advisers.</p>
+    <p style="font-size:14.5px;color:#33424f">The appointment can be delivered either over the
+      phone or over video call (Teams) from our offices in Cheshire. It includes one hour of
+      our expert&rsquo;s time to review the audit in detail, talk you through the results and
+      answer any questions you may have.</p>
+    <p style="font-size:14.5px;color:#33424f">At the end of the consultation you should have
+      all the information you need to make an informed decision about your next steps.</p>
+
+    <div class="choice" id="con-yes" onclick="consultChoice(true)">
+      <div class="t">Book my Free Consultation <span class="value-flag">&pound;149 VALUE</span></div>
+      <div class="sub">One hour with an expert adviser &mdash; phone or video.</div>
+      <div class="drawer hidden" id="con-book" onclick="event.stopPropagation()" style="margin-top:14px">
+        <div class="seg">
+          <div class="opt" id="ct-phone" onclick="consultType('Phone')">Phone</div>
+          <div class="opt" id="ct-video" onclick="consultType('Video')">Video (Teams)</div>
+        </div>
+        <div id="book-slot" class="hidden">
+          <div class="bookframe hidden" id="book-embed"></div>
+          <div id="book-fallback">
+            <label class="fld">Preferred date <span class="opt">&mdash; we&rsquo;ll confirm the
+              exact time with you</span></label>
+            <input type="date" id="con-date">
+            <label class="fld">Preferred time of day</label>
+            <select id="con-tod"><option>Morning</option><option>Afternoon</option></select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="choice" id="con-no" onclick="consultChoice(false)">
+      <div class="t">No thanks, just the audit please</div>
+      <div class="sub">We&rsquo;ll produce your audit and send it over &mdash; please allow a
+        minimum of 2 working days.</div>
+      <div class="drawer hidden" id="audit-only-date" onclick="event.stopPropagation()" style="margin-top:14px">
+        <label class="fld">When would you like your audit delivered by?
+          <span class="opt">&mdash; minimum 2 days from today</span></label>
+        <input type="date" id="audit-date">
+      </div>
+    </div>
+
+    <div class="err hidden" id="con-err"></div>
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitConsult()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 7 — APPLICANT ============ -->
+  <section class="card hidden" data-screen="applicant">
+    <h2>Who is the audit for?</h2>
+    <p class="lead">These are the details your audit &mdash; and any application that follows
+      &mdash; would be prepared in.</p>
+
+    <label class="fld">Are you an organisation or an individual?</label>
+    <div class="seg" id="app-kind">
+      <div class="opt" data-k="uk_org" onclick="appKind('uk_org')">UK organisation</div>
+      <div class="opt" data-k="nonuk_org" onclick="appKind('nonuk_org')">Non-UK organisation</div>
+      <div class="opt" data-k="uk_ind" onclick="appKind('uk_ind')">UK individual</div>
+      <div class="opt" data-k="nonuk_ind" onclick="appKind('nonuk_ind')">Non-UK individual</div>
+    </div>
+
+    <div id="app-form" class="hidden">
+      <div id="app-ch" class="subcard hidden">
+        <label class="fld" style="margin-top:0">Find your organisation on Companies House</label>
+        <input type="text" id="app-ch-q" placeholder="Search by name or number" oninput="appChSearch()" autocomplete="off">
+        <div class="listbox hidden" id="app-ch-results"></div>
+      </div>
+      <div class="cols">
+        <div><label class="fld" id="app-name-lbl">Organisation Name</label>
+          <input type="text" id="a-name"></div>
+        <div id="app-id-wrap"><label class="fld">Organisation ID <span class="opt">&mdash; companies only</span></label>
+          <input type="text" id="a-id"></div>
+      </div>
+      <label class="fld">Address Line 1</label><input type="text" id="a-addr1">
+      <label class="fld">Address Line 2 <span class="opt">optional</span></label><input type="text" id="a-addr2">
+      <label class="fld">Address Line 3 <span class="opt">optional</span></label><input type="text" id="a-addr3">
+      <div class="cols"><div><label class="fld">Postcode</label><input type="text" id="a-postcode"></div></div>
+    </div>
+
+    <div class="err hidden" id="a-err"></div>
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitApplicant()">Continue</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 8 — SUMMARY & PAYMENT ============ -->
+  <section class="card hidden" data-screen="summary">
+    <h2>Your Trademark Audit</h2>
+    <p class="lead">Check everything over &mdash; you can go back and change any of it.</p>
+    <div id="sum-body"></div>
+
+    <div class="totals" id="sum-totals"></div>
+
+    <h3>How would you prefer to pay the invoice?</h3>
+    <div class="choice" id="pay-now" onclick="payChoice('phone_now')">
+      <div class="t">Over the phone now</div>
+      <div class="sub">We&rsquo;ll raise your invoice and take secure card payment.</div>
+      <div class="drawer hidden" id="pay-now-body" onclick="event.stopPropagation()" style="margin-top:12px">
+        <div class="subcard" id="pay-now-info"></div>
+      </div>
+    </div>
+    <div class="choice" id="pay-inv" onclick="payChoice('invoice')">
+      <div class="t">Send me an invoice</div>
+      <div class="sub" id="pay-inv-sub">Set a payment date &mdash; minimum of 2 days before your
+        audit appointment.</div>
+      <div class="drawer hidden" id="pay-inv-body" onclick="event.stopPropagation()" style="margin-top:12px">
+        <label class="fld">Payment date</label>
+        <input type="date" id="pay-date">
+        <label class="fld">Any additional email addresses to send the invoice to
+          <span class="opt">optional, comma-separated</span></label>
+        <input type="text" id="pay-cc">
+      </div>
+    </div>
+
+    <div class="err hidden" id="sum-err"></div>
+    <div class="actions">
+      <button class="link" onclick="goBack()">&larr; Back</button>
+      <button class="btn primary" onclick="submitOrder()">Confirm my audit</button>
+    </div>
+  </section>
+
+  <!-- ============ PAGE 9 — THANK YOU + FACT FIND ============ -->
+  <section class="card hidden" data-screen="done">
+    <div class="done-mark">&#10003;</div>
+    <h2 style="text-align:center">Thank you &mdash; your audit is booked in</h2>
+    <div id="done-next" class="aboutbox" style="margin-top:16px"></div>
+
+    <div class="subcard">
+      <h3 style="margin-top:0">While you&rsquo;re here &mdash; a couple of quick questions</h3>
+      <p class="muted-note" style="margin-top:0">These help our advisers prepare the right
+        audit for you.</p>
+
+      <label class="fld">Who is this Trademark Audit for?</label>
+      <select id="ff-who">
+        <option value="">Please choose&hellip;</option>
+        <option>For me</option>
+        <option>For my company</option>
+        <option>For my employer</option>
+        <option>For a client I represent</option>
+      </select>
+
+      <label class="fld">What is the main reason for the audit?</label>
+      <select id="ff-reason">
+        <option value="">Please choose&hellip;</option>
+        <option value="Pre-Trademark Application">Pre-Trademark Application &mdash; I want to
+          see if my trademark can or should be registered</option>
+        <option value="Post-Trademark Registration">Post-Trademark Registration &mdash; I want
+          to check for any infringements on my trademark</option>
+      </select>
+
+      <label class="fld">What specifically prompted you to audit today?</label>
+      <select id="ff-motive">
+        <option value="">Please choose&hellip;</option>
+        <option value="Avoid brand change">I want to avoid a brand change</option>
+        <option value="Prevent Infringement">I want to prevent any infringement on my brand</option>
+        <option value="Increase Business Value">I want to increase the value of my business</option>
+      </select>
+
+      <label class="fld">Any additional information you think may be helpful?
+        <span class="opt">optional</span></label>
+      <textarea id="ff-notes"></textarea>
+
+      <div class="actions"><span></span>
+        <button class="btn primary" onclick="submitFactFind()">Send</button>
+      </div>
+      <div class="muted-note hidden" id="ff-done">Thank you &mdash; noted against your audit.</div>
+    </div>
+
+    <div class="actions" style="justify-content:center;gap:22px">
+      <a class="link" href="https://www.thetrademarkhelpline.com/">Back to the home page</a>
+      <a class="link" href="https://www.thetrademarkhelpline.com/request-brand-audit/">Read more
+        about the audit &amp; consultation</a>
+    </div>
+  </section>
+</div>
+
+<script>
+/* ================= CONFIG ================= */
+const CONFIG=(function(){
+  const q=new URLSearchParams(location.search);
+  return {
+    EMBED:q.get('embed')==='1',
+    SESSION:q.get('s')||q.get('fs')||'',
+    NAME:q.get('q')||'',
+    JOURNEY:q.get('journey')||'https://jwanlhdmhgmbybcdhvkx.supabase.co/functions/v1/journey',
+    /* Pricing — config-driven (Jonathan: leave pricing to the end; discount is
+       whatever gets the net total to NET_TOTAL, always). */
+    PRICE_AUDIT:149, PRICE_CONSULT:149, NET_TOTAL:99, VAT_RATE:0.20,
+    /* Zoho Bookings booking-page URLs for the two Audit Call types. Until these
+       are configured the page captures a date/time preference instead. */
+    BOOK_PHONE_URL:q.get('bookphone')||'',
+    BOOK_VIDEO_URL:q.get('bookvideo')||'',
+    /* Stripe payment link for "over the phone now" — until configured we show
+       the we'll-call-you message with the invoice reference. */
+    STRIPE_LINK:q.get('stripe')||''
+  };
+})();
+function journeyBase(){return CONFIG.JOURNEY.replace(/\/$/,'');}
+function engineBase(){return '';} /* same origin */
+
+const NICE={1:'Chemicals',2:'Paints & Coatings',3:'Cosmetics & Cleaning',4:'Oils, Lubricants & Fuels',
+ 5:'Pharmaceuticals',6:'Metal Products',7:'Machinery',8:'Hand Tools',9:'Electrical, Scientific & Computers',
+ 10:'Medical Apparatus',11:'Lighting, Heating & Sanitary',12:'Vehicles',13:'Firearms & Fireworks',
+ 14:'Jewellery & Watches',15:'Musical Instruments',16:'Paper & Stationery',17:'Rubber & Plastics',
+ 18:'Leather & Luggage',19:'Building Materials (non-metal)',20:'Furniture',21:'Household & Kitchen Utensils',
+ 22:'Ropes, Nets & Tents',23:'Yarns & Threads',24:'Textiles & Linen',25:'Clothing, Footwear & Headwear',
+ 26:'Lace, Ribbons & Haberdashery',27:'Carpets & Floor Coverings',28:'Games, Toys & Sporting Goods',
+ 29:'Meat, Fish & Dairy',30:'Coffee, Bakery & Staple Foods',31:'Agriculture & Live Animals',
+ 32:'Beers & Soft Drinks',33:'Alcoholic Beverages',34:'Tobacco & Smokers’ Articles',35:'Advertising & Business',
+ 36:'Financial & Insurance',37:'Construction & Repair',38:'Telecommunications',39:'Transport & Storage',
+ 40:'Treatment of Materials',41:'Education & Entertainment',42:'Science & Technology (IT)',
+ 43:'Food & Drink Services',44:'Medical & Beauty Services',45:'Legal & Security Services'};
+
+const SOCIALS=[['facebook','Facebook'],['instagram','Instagram'],['youtube','YouTube'],
+  ['tiktok','TikTok'],['linkedin','LinkedIn']];
+const SHOPS=[['amazon','Amazon'],['etsy','Etsy'],['temu','Temu'],['tiktokshop','TikTok Shop'],
+  ['ebay','eBay'],['alibaba','Alibaba']];
+
+/* ================= STATE ================= */
+const SCREENS=['contact','searches','jurisdiction','classes','platforms','consult','applicant','summary','done'];
+const STEP_LABELS=['Contact','Searches','Territories','Classes','Platforms','Consultation','Details','Summary','Done'];
+const state={
+  sessionId:CONFIG.SESSION||'', source:'', screen:'contact',
+  contact:{first:'',last:'',email:'',phone:''},
+  name:CONFIG.NAME||'', hasLogo:false, logoUrl:'', logoLater:false, tagline:'',
+  now:['GB'], plan:[], nowMode:'uk', planMode:'none',
+  classes:[], scope:[], termsShown:true,
+  platforms:{ipos:{}, org:null, orgNone:false, domain:'', domainNone:false,
+             soc:{}, shop:{}},
+  consult:{taken:null, type:'', prefDate:'', prefTod:'', auditDate:''},
+  applicant:{kind:'',name:'',id:'',addr1:'',addr2:'',addr3:'',postcode:''},
+  payment:{method:'',payDate:'',cc:''},
+  submitted:false
+};
+SOCIALS.forEach(([k])=>state.platforms.soc[k]={on:false,url:'',mode:'url'});
+SHOPS.forEach(([k])=>state.platforms.shop[k]={on:false,url:'',mode:'url'});
+
+/* ================= JOURNEY PLUMBING ================= */
+async function ensureSession(){
+  if(state.sessionId) return state.sessionId;
+  try{
+    const r=await fetch(journeyBase()+'/session/start',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tenant_id:'tmh',source:'brand_audit_direct',name:state.name||null,
+        screen:'audit_contact'})});
+    const d=await r.json();
+    if(d&&d.ok&&d.session_id) state.sessionId=d.session_id;
+  }catch(e){}
+  return state.sessionId;
+}
+function logEvent(type,screen,payload,snapshot){
+  const send=id=>{ if(!id) return;
+    try{ fetch(journeyBase()+'/session/event',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({session_id:id,event_type:type,screen:screen||null,
+        payload:payload||{},snapshot:snapshot||undefined})}).catch(()=>{});}catch(e){} };
+  if(state.sessionId) send(state.sessionId); else ensureSession().then(send);
+}
+
+/* ================= NAV ================= */
+function stepsBar(){
+  const cur=SCREENS.indexOf(state.screen);
+  document.getElementById('steps').innerHTML=STEP_LABELS.map((l,i)=>
+    `<div class="s ${i<cur?'done':i===cur?'active':''}">${l}</div>`).join('');
+}
+function renderScreen(id){
+  state.screen=id;
+  document.querySelectorAll('[data-screen]').forEach(el=>el.classList.add('hidden'));
+  const el=document.querySelector(`[data-screen="${id}"]`);
+  if(el)el.classList.remove('hidden');
+  stepsBar();
+  try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){}
+  try{window.parent.postMessage({brauditScrollTop:true},'*');}catch(e){}
+}
+function go(id){history.pushState({screen:id},'','#'+id);renderScreen(id);}
+function goBack(){history.back();}
+window.addEventListener('popstate',e=>{
+  renderScreen((e.state&&e.state.screen)||'contact');});
+
+/* ================= PAGE 1 — CONTACT ================= */
+function submitContact(){
+  const f=v=>document.getElementById(v).value.trim();
+  const c={first:f('c-first'),last:f('c-last'),email:f('c-email'),phone:f('c-phone')};
+  const err=document.getElementById('c-err');
+  if(!c.first||!c.last||!c.email||!c.phone){
+    err.textContent='All four contact fields are needed to begin your audit.';
+    err.classList.remove('hidden');return;}
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c.email)){
+    err.textContent='That email address doesn’t look right.';err.classList.remove('hidden');return;}
+  err.classList.add('hidden');
+  state.contact=c;
+  /* lead_captured + snapshot: the journey function pushes/updates the Zoho
+     Lead automatically the moment real contact info exists. */
+  logEvent('lead_captured','audit_contact',{via:'audit_checkout'},
+    {first_name:c.first,last_name:c.last,email:c.email,phone:c.phone,
+     email_source:'report_form',current_screen:'audit_contact'});
+  go('searches');
+}
+
+/* ================= PAGE 2 — SEARCHES ================= */
+function toggleLogo(ev){
+  const t=document.getElementById('s-logo');
+  t.classList.toggle('on'); state.hasLogo=t.classList.contains('on');
+}
+function toggleTag(ev){
+  const t=document.getElementById('s-tag');
+  t.classList.toggle('on');
+}
+function submitSearches(){
+  state.name=document.getElementById('s-name').value.trim();
+  const err=document.getElementById('s-err');
+  if(!state.name){err.textContent='We need the name to audit.';err.classList.remove('hidden');return;}
+  err.classList.add('hidden');
+  state.hasLogo=document.getElementById('s-logo').classList.contains('on');
+  const how=(document.querySelector('input[name="logo-how"]:checked')||{}).value||'url';
+  state.logoUrl=state.hasLogo&&how==='url'?document.getElementById('s-logo-url').value.trim():'';
+  state.logoLater=state.hasLogo&&(how==='later'||!state.logoUrl);
+  state.tagline=document.getElementById('s-tag').classList.contains('on')
+    ?document.getElementById('s-tagline').value.trim():'';
+  logEvent('audit_checkout_searches','audit_searches',
+    {logo_url:state.logoUrl,logo_later:state.logoLater},
+    {name:state.name,has_logo:state.hasLogo,tagline:state.tagline||null,
+     current_screen:'audit_searches'});
+  go('jurisdiction');
+}
+
+/* ================= PAGE 3 — JURISDICTIONS ================= */
+let PICKER={popular:[{code:'GB',label:'United Kingdom'},{code:'EU',label:'European Union',covers:'27 countries'},
+  {code:'US',label:'United States'},{code:'CA',label:'Canada'},{code:'AU',label:'Australia'},
+  {code:'NZ',label:'New Zealand'},{code:'AE',label:'Dubai / UAE'},{code:'SG',label:'Singapore'},
+  {code:'SA',label:'Saudi Arabia'}],regions:[],all_countries:[]};
+const COUNTRY_NAME={};
+function harvestNames(){[...(PICKER.popular||[]),...(PICKER.regions||[]),...(PICKER.all_countries||[])]
+  .forEach(c=>COUNTRY_NAME[c.code]=c.label);}
+harvestNames();
+(function loadPicker(){
+  fetch(engineBase()+'/jurisdictions').then(r=>r.json()).then(d=>{
+    if(d&&d.ok&&d.picker){PICKER=d.picker;harvestNames();paintPickers();}
+  }).catch(()=>{});
+})();
+function setMode(which,mode){
+  if(which==='now'){state.nowMode=mode;
+    document.getElementById('now-uk').classList.toggle('on',mode==='uk');
+    document.getElementById('now-select').classList.toggle('on',mode==='select');
+    document.getElementById('pick-now').innerHTML=mode==='select'?pickerHtml('now'):'';
+    if(mode==='uk')state.now=['GB'];
+  }else{state.planMode=mode;
+    document.getElementById('plan-none').classList.toggle('on',mode==='none');
+    document.getElementById('plan-select').classList.toggle('on',mode==='select');
+    const pp=document.getElementById('pick-plan');
+    pp.classList.toggle('hidden',mode!=='select');
+    pp.innerHTML=mode==='select'?pickerHtml('plan'):'';
+    if(mode==='none')state.plan=[];}
+}
+function pickerHtml(which){
+  const sel=which==='now'?state.now:state.plan;
+  const chip=c=>`<span class="c ${sel.includes(c.code)?'on':''}" onclick="toggleCountry('${which}','${c.code}',this)">${c.label}</span>`;
+  let h='<div class="group-title">Popular</div><div class="pop">'+(PICKER.popular||[]).map(chip).join('')+'</div>';
+  if((PICKER.all_countries||[]).length)
+    h+='<div class="group-title">All countries</div><div class="pop">'+(PICKER.all_countries||[]).map(chip).join('')+'</div>';
+  return h;
+}
+function paintPickers(){
+  if(state.nowMode==='select')document.getElementById('pick-now').innerHTML=pickerHtml('now');
+  if(state.planMode==='select')document.getElementById('pick-plan').innerHTML=pickerHtml('plan');
+}
+function toggleCountry(which,code,el){
+  const arr=which==='now'?state.now:state.plan;
+  const i=arr.indexOf(code);
+  if(i>=0)arr.splice(i,1);else arr.push(code);
+  el.classList.toggle('on',i<0);
+}
+function submitJurisdictions(){
+  if(state.nowMode==='uk')state.now=['GB'];
+  if(!state.now.length)state.now=['GB'];
+  logEvent('audit_checkout_jurisdictions','audit_jurisdiction',{},
+    {trading_now:state.now,planning_to_trade:state.plan,current_screen:'audit_jurisdiction'});
+  buildIpoList();
+  go('classes');
+}
+
+/* ================= PAGE 4 — CLASSES & DESCRIPTIONS ================= */
+function renderClasses(){
+  const bk=document.getElementById('cls-basket');
+  if(!state.classes.length){
+    bk.innerHTML='<span class="muted-note">No classes yet &mdash; use the class tools below.</span>';
+  }else{
+    bk.innerHTML=state.classes.map(n=>`<span class="chip"><b>${n}</b> ${NICE[n]||('Class '+n)}</span>`).join('');
+  }
+  const rows=document.getElementById('cls-rows');
+  if(!state.termsShown||!state.scope.length){rows.innerHTML='';return;}
+  rows.innerHTML=state.scope.map((r,i)=>`
+    <div class="clsrow"><div class="h"><span class="n">Class ${r.n}</span> &mdash; ${NICE[r.n]||''}</div>
+      ${r.heading?`<div class="muted-note" style="margin-top:2px">${r.heading}</div>`:''}
+      <textarea id="cls-t-${i}" placeholder="Goods &amp; services wording for class ${r.n}">${(r.terms||[]).join('\n')}</textarea>
+    </div>`).join('');
+}
+let TOOLS_TOKEN='';
+function openClassTools(){
+  TOOLS_TOKEN='t'+Math.random().toString(36).slice(2);
+  const ov=document.createElement('div');ov.id='tools-ov';
+  ov.innerHTML=`<div class="tv"><div class="bar">
+      <b style="color:var(--navy)">Choose classes &amp; terms${state.name?' — '+state.name:''}</b>
+      <button class="btn ghost small" onclick="closeClassTools()">Close</button></div>
+      <iframe id="tools-if" src="${engineBase()}/class-builder?screen=classes&return=${TOOLS_TOKEN}${state.name?'&q='+encodeURIComponent(state.name):''}&journey=${encodeURIComponent(journeyBase())}"></iframe></div>`;
+  document.body.appendChild(ov);
+}
+function closeClassTools(){const ov=document.getElementById('tools-ov');if(ov)ov.remove();}
+window.addEventListener('message',e=>{
+  const d=e.data&&e.data.brauditClasses;
+  if(!d||d.token!==TOOLS_TOKEN)return;
+  state.classes=(d.classes||[]).map(Number);
+  state.scope=(d.scope||[]).map(r=>({n:Number(r.n),heading:r.heading||'',
+    terms:(r.terms||[]).map(String),terms_source:r.terms_source||'Approved'}));
+  state.termsShown=true;
+  renderClasses();
+  setTimeout(closeClassTools,700);
+});
+function collectTermEdits(){
+  if(!state.termsShown)return;
+  state.scope.forEach((r,i)=>{
+    const ta=document.getElementById('cls-t-'+i);
+    if(!ta)return;
+    const edited=ta.value.split('\n').map(s=>s.trim()).filter(Boolean);
+    if(edited.join('\n')!==(r.terms||[]).join('\n'))r.terms_source='Custom Edited';
+    r.terms=edited;});
+}
+function submitClasses(){
+  const err=document.getElementById('cls-err');
+  if(!state.classes.length){err.textContent='Pick at least one class — the tools make it quick.';
+    err.classList.remove('hidden');return;}
+  err.classList.add('hidden');
+  collectTermEdits();
+  logEvent('audit_checkout_classes','audit_classes',
+    {application_scope:state.scope},
+    {classes:state.classes,current_screen:'audit_classes'});
+  buildIpoList();
+  go('platforms');
+}
+
+/* ================= PAGE 5 — PLATFORMS ================= */
+function buildIpoList(){
+  const codes=[...new Set([...state.now,...state.plan])];
+  codes.forEach(c=>{if(!(c in state.platforms.ipos))state.platforms.ipos[c]=true;});
+  Object.keys(state.platforms.ipos).forEach(c=>{if(!codes.includes(c))delete state.platforms.ipos[c];});
+  const el=document.getElementById('ipo-list');
+  el.innerHTML=codes.map(c=>{
+    const on=state.platforms.ipos[c];
+    return `<div class="plat ${on?'on':''}" id="ipo-${c}">
+      <div class="pbox" onclick="toggleIpo('${c}')">${on?'&#10003;':''}</div>
+      <div class="pt" onclick="toggleIpo('${c}')">${COUNTRY_NAME[c]||c} trademark register</div>
+    </div>`;}).join('');
+}
+function toggleIpo(c){
+  state.platforms.ipos[c]=!state.platforms.ipos[c];
+  buildIpoList();
+}
+/* Companies House */
+let chTimer=null;
+function chSearch(){clearTimeout(chTimer);chTimer=setTimeout(async()=>{
+  const q=document.getElementById('ch-q').value.trim();
+  const box=document.getElementById('ch-results');
+  if(q.length<2){box.classList.add('hidden');return;}
+  try{
+    const r=await fetch(engineBase()+'/lookup/company?q='+encodeURIComponent(q));
+    const d=await r.json();
+    const items=(d.companies||d.items||[]).slice(0,8);
+    if(!items.length){box.classList.add('hidden');return;}
+    box.innerHTML=items.map(c=>{
+      const num=c.number||c.company_number||'';
+      const nm=(c.name||c.title||'').replace(/'/g,'&#39;');
+      return `<div class="row" onclick="chPick('${num}','${nm}')">
+        <div class="cn">${nm}</div><div class="cm">${num}${c.address?' — '+c.address:''}</div></div>`;
+    }).join('');
+    box.classList.remove('hidden');
+  }catch(e){box.classList.add('hidden');}
+},280);}
+function chPick(num,name){
+  state.platforms.org={number:num,name:name};state.platforms.orgNone=false;
+  document.getElementById('ch-none').checked=false;
+  document.getElementById('ch-results').classList.add('hidden');
+  document.getElementById('ch-q').value='';
+  const chip=document.getElementById('ch-picked');
+  chip.innerHTML=`<b>${num}</b> ${name} <span class="x" onclick="chClear()" style="cursor:pointer;color:var(--pink);font-weight:800">&times;</span>`;
+  chip.classList.remove('hidden');
+}
+function chClear(){state.platforms.org=null;document.getElementById('ch-picked').classList.add('hidden');}
+function chNone(){
+  state.platforms.orgNone=document.getElementById('ch-none').checked;
+  if(state.platforms.orgNone)chClear();
+}
+/* social + shopping */
+function platRow(group,key,label){
+  const p=state.platforms[group][key];
+  return `<div class="plat ${p.on?'on':''}" id="pl-${group}-${key}">
+    <div class="pbox" onclick="togglePlat('${group}','${key}')">${p.on?'&#10003;':''}</div>
+    <div style="flex:1"><div class="pt" onclick="togglePlat('${group}','${key}')">${label}</div>
+      <div class="purl">
+        <div class="radio-row">
+          <label><input type="radio" name="pm-${group}-${key}" value="url" ${p.mode==='url'?'checked':''}
+            onchange="platMode('${group}','${key}','url')"> Add the URL to my account</label>
+          <label><input type="radio" name="pm-${group}-${key}" value="none" ${p.mode==='none'?'checked':''}
+            onchange="platMode('${group}','${key}','none')"> I don&rsquo;t have one</label>
+          <label><input type="radio" name="pm-${group}-${key}" value="later" ${p.mode==='later'?'checked':''}
+            onchange="platMode('${group}','${key}','later')"> I&rsquo;ll add it later</label>
+        </div>
+        <input type="url" id="pu-${group}-${key}" placeholder="https://" value="${p.url||''}"
+          style="margin-top:8px" ${p.mode!=='url'?'class="hidden"':''}
+          oninput="state.platforms['${group}']['${key}'].url=this.value.trim()">
+      </div></div></div>`;
+}
+function paintPlatforms(){
+  document.getElementById('soc-list').innerHTML=SOCIALS.map(([k,l])=>platRow('soc',k,l)).join('');
+  document.getElementById('shop-list').innerHTML=SHOPS.map(([k,l])=>platRow('shop',k,l)).join('');
+}
+function togglePlat(group,key){
+  const p=state.platforms[group][key];p.on=!p.on;paintPlatforms();syncAllBox(group);
+}
+function platMode(group,key,mode){
+  state.platforms[group][key].mode=mode;
+  const inp=document.getElementById('pu-'+group+'-'+key);
+  if(inp)inp.classList.toggle('hidden',mode!=='url');
+}
+function allPlatforms(group,onoff){
+  Object.values(state.platforms[group]).forEach(p=>p.on=onoff);
+  paintPlatforms();
+}
+function syncAllBox(group){
+  const all=Object.values(state.platforms[group]).every(p=>p.on);
+  document.getElementById(group+'-all').checked=all;
+}
+function submitPlatforms(){
+  const err=document.getElementById('p-err');
+  state.platforms.domain=document.getElementById('dom-in').value.trim();
+  state.platforms.domainNone=document.getElementById('dom-none').checked;
+  if(!state.platforms.org&&!state.platforms.orgNone){
+    err.textContent='Add your UK organisation, or tick that you don’t have a registered company.';
+    err.classList.remove('hidden');return;}
+  if(!state.platforms.domain&&!state.platforms.domainNone){
+    err.textContent='Add your domain name, or tick that you don’t have one.';
+    err.classList.remove('hidden');return;}
+  /* every selected platform needs a URL or an explicit no/later */
+  for(const [group,defs] of [['soc',SOCIALS],['shop',SHOPS]]){
+    for(const [k,l] of defs){
+      const p=state.platforms[group][k];
+      if(p.on&&p.mode==='url'&&!p.url){
+        err.textContent=`Add your ${l} URL, or tick “I don’t have one” / “I’ll add it later”.`;
+        err.classList.remove('hidden');return;}
+    }}
+  err.classList.add('hidden');
+  logEvent('audit_checkout_platforms','audit_platforms',{platforms:state.platforms},{current_screen:'audit_platforms'});
+  go('consult');
+}
+
+/* ================= PAGE 6 — CONSULTATION ================= */
+function consultChoice(taken){
+  state.consult.taken=taken;
+  document.getElementById('con-yes').classList.toggle('on',taken);
+  document.getElementById('con-no').classList.toggle('on',!taken);
+  document.getElementById('con-book').classList.toggle('hidden',!taken);
+  document.getElementById('audit-only-date').classList.toggle('hidden',taken);
+  if(!taken){
+    const d=new Date();d.setDate(d.getDate()+2);
+    const el=document.getElementById('audit-date');
+    el.min=d.toISOString().slice(0,10);
+    if(!el.value)el.value=el.min;
+  }
+}
+function consultType(t){
+  state.consult.type=t;
+  document.getElementById('ct-phone').classList.toggle('on',t==='Phone');
+  document.getElementById('ct-video').classList.toggle('on',t==='Video');
+  document.getElementById('book-slot').classList.remove('hidden');
+  const url=t==='Phone'?CONFIG.BOOK_PHONE_URL:CONFIG.BOOK_VIDEO_URL;
+  const emb=document.getElementById('book-embed'),fb=document.getElementById('book-fallback');
+  if(url){emb.innerHTML=`<iframe src="${url}" title="Book your consultation"></iframe>`;
+    emb.classList.remove('hidden');fb.classList.add('hidden');}
+  else{emb.classList.add('hidden');fb.classList.remove('hidden');
+    const d=new Date();d.setDate(d.getDate()+2);
+    const el=document.getElementById('con-date');
+    el.min=d.toISOString().slice(0,10);
+    if(!el.value)el.value=el.min;}
+}
+function submitConsult(){
+  const err=document.getElementById('con-err');
+  if(state.consult.taken===null){
+    err.textContent='Choose the free consultation, or just the audit.';err.classList.remove('hidden');return;}
+  if(state.consult.taken){
+    if(!state.consult.type){err.textContent='Phone or video?';err.classList.remove('hidden');return;}
+    state.consult.prefDate=document.getElementById('con-date').value||'';
+    state.consult.prefTod=document.getElementById('con-tod').value||'';
+    if(!CONFIG.BOOK_PHONE_URL&&!state.consult.prefDate){
+      err.textContent='Pick a preferred date for your consultation.';err.classList.remove('hidden');return;}
+  }else{
+    state.consult.auditDate=document.getElementById('audit-date').value||'';
+    if(!state.consult.auditDate){err.textContent='Pick a delivery date — minimum 2 days from today.';
+      err.classList.remove('hidden');return;}
+  }
+  err.classList.add('hidden');
+  logEvent('audit_checkout_consult','audit_consult',{consult:state.consult},{current_screen:'audit_consult'});
+  go('applicant');
+}
+
+/* ================= PAGE 7 — APPLICANT ================= */
+function appKind(k){
+  state.applicant.kind=k;
+  document.querySelectorAll('#app-kind .opt').forEach(el=>
+    el.classList.toggle('on',el.dataset.k===k));
+  document.getElementById('app-form').classList.remove('hidden');
+  document.getElementById('app-ch').classList.toggle('hidden',k!=='uk_org');
+  const org=k==='uk_org'||k==='nonuk_org';
+  document.getElementById('app-name-lbl').textContent=org?'Organisation Name':'Full Name';
+  document.getElementById('app-id-wrap').classList.toggle('hidden',!org);
+  if(org&&state.platforms.org&&!document.getElementById('a-name').value){
+    document.getElementById('a-name').value=state.platforms.org.name||'';
+    document.getElementById('a-id').value=state.platforms.org.number||'';
+  }
+}
+let appChTimer=null;
+function appChSearch(){clearTimeout(appChTimer);appChTimer=setTimeout(async()=>{
+  const q=document.getElementById('app-ch-q').value.trim();
+  const box=document.getElementById('app-ch-results');
+  if(q.length<2){box.classList.add('hidden');return;}
+  try{
+    const r=await fetch(engineBase()+'/lookup/company?q='+encodeURIComponent(q));
+    const d=await r.json();
+    const items=(d.companies||d.items||[]).slice(0,8);
+    if(!items.length){box.classList.add('hidden');return;}
+    box.innerHTML=items.map(c=>{
+      const num=c.number||c.company_number||'';
+      const nm=(c.name||c.title||'').replace(/'/g,'&#39;');
+      const ad=(c.address||'').replace(/'/g,'&#39;');
+      return `<div class="row" onclick="appChPick('${num}','${nm}','${ad}')">
+        <div class="cn">${nm}</div><div class="cm">${num}${ad?' — '+ad:''}</div></div>`;
+    }).join('');
+    box.classList.remove('hidden');
+  }catch(e){box.classList.add('hidden');}
+},280);}
+function appChPick(num,name,addr){
+  document.getElementById('app-ch-results').classList.add('hidden');
+  document.getElementById('app-ch-q').value=name;
+  document.getElementById('a-name').value=name;
+  document.getElementById('a-id').value=num;
+  if(addr){
+    const parts=addr.split(',').map(s=>s.trim()).filter(Boolean);
+    const pc=parts.length&&/\d/.test(parts[parts.length-1])?parts.pop():'';
+    document.getElementById('a-addr1').value=parts[0]||'';
+    document.getElementById('a-addr2').value=parts[1]||'';
+    document.getElementById('a-addr3').value=parts.slice(2).join(', ')||'';
+    if(pc)document.getElementById('a-postcode').value=pc;
+  }
+}
+function submitApplicant(){
+  const err=document.getElementById('a-err');
+  const g=id=>document.getElementById(id).value.trim();
+  if(!state.applicant.kind){err.textContent='Tell us who the audit is for.';err.classList.remove('hidden');return;}
+  Object.assign(state.applicant,{name:g('a-name'),id:g('a-id'),
+    addr1:g('a-addr1'),addr2:g('a-addr2'),addr3:g('a-addr3'),postcode:g('a-postcode')});
+  if(!state.applicant.name||!state.applicant.addr1||!state.applicant.postcode){
+    err.textContent='Name, first address line and postcode are needed.';err.classList.remove('hidden');return;}
+  err.classList.add('hidden');
+  logEvent('audit_checkout_applicant','audit_applicant',{applicant:state.applicant},{current_screen:'audit_applicant'});
+  renderSummary();
+  go('summary');
+}
+
+/* ================= PAGE 8 — SUMMARY & PAYMENT ================= */
+function money(n){return '£'+n.toFixed(2);}
+function pricing(){
+  const consult=state.consult.taken===true;
+  const gross=CONFIG.PRICE_AUDIT+(consult?CONFIG.PRICE_CONSULT:0);
+  const discount=gross-CONFIG.NET_TOTAL;   /* whatever gets to £99 net */
+  const net=CONFIG.NET_TOTAL;
+  const vat=net*CONFIG.VAT_RATE;
+  return {consult,gross,discount,net,vat,total:net+vat};
+}
+function invoiceRef(){return 'AUD-'+(state.sessionId||'').replace(/-/g,'').slice(0,8).toUpperCase();}
+function renderSummary(){
+  const p=state.platforms;
+  const kindLabel={uk_org:'UK organisation',nonuk_org:'Non-UK organisation',
+    uk_ind:'UK individual',nonuk_ind:'Non-UK individual'}[state.applicant.kind]||'';
+  const socOn=SOCIALS.filter(([k])=>p.soc[k].on).map(([k,l])=>l);
+  const shopOn=SHOPS.filter(([k])=>p.shop[k].on).map(([k,l])=>l);
+  const ipoOn=Object.keys(p.ipos).filter(c=>p.ipos[c]).map(c=>COUNTRY_NAME[c]||c);
+  const excl=[];
+  if(p.org)excl.push(`${p.org.name} (${p.org.number})`);
+  if(p.domain)excl.push(p.domain);
+  SOCIALS.forEach(([k,l])=>{if(p.soc[k].on&&p.soc[k].url)excl.push(l+': '+p.soc[k].url);});
+  SHOPS.forEach(([k,l])=>{if(p.shop[k].on&&p.shop[k].url)excl.push(l+': '+p.shop[k].url);});
+  const searches=['Name: '+state.name];
+  if(state.hasLogo)searches.push('Logo'+(state.logoLater?' (to follow)':''));
+  if(state.tagline)searches.push('Tagline: '+state.tagline);
+  const sec=(t,b)=>`<div class="sumsec"><div class="sh"><h4>${t}</h4></div><div class="body">${b}</div></div>`;
+  document.getElementById('sum-body').innerHTML=
+    sec('Searches',searches.join(' &middot; '))+
+    sec('Classes &amp; terms',state.classes.map(n=>`<b>${n}</b> ${NICE[n]||''}`).join(' &middot; '))+
+    sec('Search platforms',
+      'Registers: '+ipoOn.join(', ')+'<br>UK Companies House &middot; Domain registers'+
+      (socOn.length?'<br>Social: '+socOn.join(', '):'')+
+      (shopOn.length?'<br>Shopping: '+shopOn.join(', '):''))+
+    sec('Your brand assets (excluded from results)',excl.length?excl.join('<br>'):'None recorded')+
+    sec('Consultation',state.consult.taken
+      ?`Free consultation (${state.consult.type})${state.consult.prefDate?' — preferred '+state.consult.prefDate+' ('+state.consult.prefTod+')':''}`
+      :'Audit only — delivery by '+state.consult.auditDate)+
+    sec('Prepared for',`${kindLabel}: ${state.applicant.name}`+
+      (state.applicant.id?` (${state.applicant.id})`:'')+
+      `<br>${[state.applicant.addr1,state.applicant.addr2,state.applicant.addr3,state.applicant.postcode].filter(Boolean).join(', ')}`);
+  const pr=pricing();
+  document.getElementById('sum-totals').innerHTML=
+    `<div class="tr"><span>Trademark Audit</span><span>${money(CONFIG.PRICE_AUDIT)}</span></div>`+
+    (pr.consult?`<div class="tr"><span>Audit Consultation</span><span>${money(CONFIG.PRICE_CONSULT)}</span></div>`:'')+
+    `<div class="tr disc"><span>Discount</span><span>&minus;${money(pr.discount)}</span></div>`+
+    `<div class="tr"><span>Net total</span><span>${money(pr.net)}</span></div>`+
+    `<div class="tr"><span>VAT @ ${Math.round(CONFIG.VAT_RATE*100)}%</span><span>${money(pr.vat)}</span></div>`+
+    `<div class="tr grand"><span>Total payable</span><span>${money(pr.total)}</span></div>`;
+  /* invoice-date constraints: ≥2 days before the consultation where relevant */
+  const pd=document.getElementById('pay-date');
+  const today=new Date();today.setDate(today.getDate()+1);
+  pd.min=today.toISOString().slice(0,10);
+  if(state.consult.taken&&state.consult.prefDate){
+    const cap=new Date(state.consult.prefDate);cap.setDate(cap.getDate()-2);
+    pd.max=cap.toISOString().slice(0,10);
+    document.getElementById('pay-inv-sub').textContent=
+      'Set a payment date — minimum of 2 days before your audit appointment on '+state.consult.prefDate+'.';
+  }
+}
+function payChoice(m){
+  state.payment.method=m;
+  document.getElementById('pay-now').classList.toggle('on',m==='phone_now');
+  document.getElementById('pay-inv').classList.toggle('on',m==='invoice');
+  document.getElementById('pay-now-body').classList.toggle('hidden',m!=='phone_now');
+  document.getElementById('pay-inv-body').classList.toggle('hidden',m!=='invoice');
+  if(m==='phone_now'){
+    const pr=pricing();
+    document.getElementById('pay-now-info').innerHTML=
+      `<b>Invoice reference: ${invoiceRef()}</b><br>`+
+      (CONFIG.STRIPE_LINK
+        ?`<a class="btn primary" style="display:inline-block;margin-top:10px;text-decoration:none"
+             href="${CONFIG.STRIPE_LINK}" target="_blank" rel="noopener">Pay ${money(pr.total)} securely now</a>`
+        :`We’ll call you on <b>${state.payment.phone||state.contact.phone}</b> to take secure
+          card payment of <b>${money(pr.total)}</b>. Have your card ready — it only takes a minute.`);
+  }
+}
+function submitOrder(){
+  const err=document.getElementById('sum-err');
+  if(!state.payment.method){err.textContent='Choose how you’d like to pay.';err.classList.remove('hidden');return;}
+  if(state.payment.method==='invoice'){
+    state.payment.payDate=document.getElementById('pay-date').value;
+    state.payment.cc=document.getElementById('pay-cc').value.trim();
+    if(!state.payment.payDate){err.textContent='Pick a payment date.';err.classList.remove('hidden');return;}
+  }
+  err.classList.add('hidden');
+  state.submitted=true;
+  const pr=pricing();
+  logEvent('audit_checkout_submitted','audit_summary',{
+    order:{
+      contact:state.contact,name:state.name,has_logo:state.hasLogo,logo_url:state.logoUrl,
+      logo_later:state.logoLater,tagline:state.tagline,
+      trading_now:state.now,planning_to_trade:state.plan,
+      classes:state.classes,application_scope:state.scope,
+      platforms:state.platforms,consult:state.consult,applicant:state.applicant,
+      payment:state.payment,pricing:pr,invoice_ref:invoiceRef(),
+      deal_variant:state.consult.taken?'Trademark Audit & Consultation':'Trademark Audit Only'
+    }},{status:'audit_ordered',current_screen:'audit_done'});
+  renderDone();
+  go('done');
+}
+
+/* ================= PAGE 9 — DONE + FACT FIND ================= */
+function renderDone(){
+  const pr=pricing();
+  const bits=[];
+  bits.push(`<p><b>What happens next?</b></p>`);
+  if(state.payment.method==='phone_now'){
+    bits.push(`<p>We’ll call you shortly on <b>${state.contact.phone}</b> to take payment of
+      <b>${money(pr.total)}</b> (invoice reference <b>${invoiceRef()}</b>).</p>`);
+  }else{
+    bits.push(`<p>Your invoice (reference <b>${invoiceRef()}</b>, ${money(pr.total)}) is on its
+      way to <b>${state.contact.email}</b>${state.payment.cc?' and '+state.payment.cc:''}, with
+      payment set for <b>${state.payment.payDate}</b>.</p>`);
+  }
+  if(state.consult.taken){
+    bits.push(`<p>Your free <b>${state.consult.type.toLowerCase()} consultation</b> is being
+      scheduled${state.consult.prefDate?' for <b>'+state.consult.prefDate+' ('+state.consult.prefTod+')</b>':''}
+      — you’ll get a confirmation with the exact time.</p>`);
+    bits.push(`<p>Our experts will have your full audit ready to walk through with you on the call.</p>`);
+  }else{
+    bits.push(`<p>Your audit will be produced and delivered by <b>${state.consult.auditDate}</b>.</p>`);
+  }
+  bits.push(`<p>Anything changes in the meantime? Call us on <b>0161 833 5400</b>.</p>`);
+  document.getElementById('done-next').innerHTML=bits.join('');
+}
+function submitFactFind(){
+  const g=id=>document.getElementById(id).value;
+  logEvent('audit_checkout_factfind','audit_done',{
+    account_type:g('ff-who')||null,          /* Account Types — Accounts */
+    review_type:g('ff-reason')||null,        /* Review Type — Client Relationships */
+    primary_motivation:g('ff-motive')||null, /* Primary Motivation — Deals */
+    enquiry_notes:g('ff-notes').trim()||null /* what prompted your trademark enquiry — Deals */
+  },{});
+  document.getElementById('ff-done').classList.remove('hidden');
+}
+
+/* ================= PREPOPULATION ================= */
+async function prepopulate(){
+  if(!state.sessionId)return;
+  try{
+    const r=await fetch(journeyBase()+'/session?id='+encodeURIComponent(state.sessionId));
+    const d=await r.json();
+    if(!d||!d.ok||!d.session)return;
+    const s=d.session;
+    state.source=s.source||'';
+    /* contact */
+    if(s.first_name)state.contact.first=s.first_name;
+    if(s.last_name)state.contact.last=s.last_name;
+    if(s.email)state.contact.email=s.email;
+    if(s.phone)state.contact.phone=s.phone;
+    ['first','last','email','phone'].forEach(k=>{
+      const el=document.getElementById('c-'+k);
+      if(el&&state.contact[k])el.value=state.contact[k];});
+    /* searches */
+    if(s.name){state.name=s.name;}
+    if(s.has_logo){state.hasLogo=true;document.getElementById('s-logo').classList.add('on');}
+    if(s.tagline){state.tagline=s.tagline;
+      document.getElementById('s-tag').classList.add('on');
+      document.getElementById('s-tagline').value=s.tagline;}
+    /* jurisdictions (Free) */
+    if(Array.isArray(s.trading_now)&&s.trading_now.length){
+      state.now=s.trading_now.map(String);
+      if(!(state.now.length===1&&state.now[0]==='GB')){
+        state.nowMode='select';setMode('now','select');}
+    }
+    if(Array.isArray(s.planning_to_trade)&&s.planning_to_trade.length){
+      state.plan=s.planning_to_trade.map(String);
+      state.planMode='select';setMode('plan','select');
+    }
+    /* classes + terms. Terms only when a class tool produced them — a manual
+       self-pick means no approved wording came from the visitor (Jonathan:
+       "Not when classes were selected manually, which is why we don't show
+       in the form"). */
+    if(Array.isArray(s.classes)&&s.classes.length)
+      state.classes=s.classes.map(Number).filter(n=>n>=1&&n<=45);
+    const lr=s.last_result||{};
+    const scope=Array.isArray(lr.application_scope)?lr.application_scope:[];
+    if(scope.length){
+      state.scope=scope.map(r=>({n:Number(r.n),heading:String(r.heading||''),
+        terms:(Array.isArray(r.terms)?r.terms:[]).map(String),
+        terms_source:String(r.terms_source||'Approved')}));
+    }
+    const csRoute=s.class_source&&s.class_source.route?String(s.class_source.route):'';
+    state.termsShown=!!csRoute;   /* manual pick → classes only, no terms shown */
+    /* domain prefill */
+    if(s.business_website&&!state.platforms.domain)
+      state.platforms.domain=String(s.business_website)
+        .replace(/^https?:\/\//,'').replace(/\/.*$/,'');
+  }catch(e){}
+  /* paint what pre-population touched */
+  document.getElementById('s-name').value=state.name||'';
+  if(state.platforms.domain)document.getElementById('dom-in').value=state.platforms.domain;
+  renderClasses();
+}
+
+/* ================= EMBED PLUMBING ================= */
+(function reportHeight(){
+  if(window.parent===window)return;
+  document.body.classList.add('embedded');
+  let last=0;
+  const send=()=>{const h=Math.ceil(document.documentElement.scrollHeight)+8;
+    if(Math.abs(h-last)<4)return;last=h;
+    try{window.parent.postMessage({brauditHeight:h},'*');}catch(e){}};
+  new ResizeObserver(send).observe(document.body);
+  send();
+  try{window.parent.postMessage({brauditReady:true},'*');}catch(e){}
+})();
+
+/* ================= BOOT ================= */
+(function boot(){
+  paintPlatforms();
+  stepsBar();
+  const nameIn=document.getElementById('s-name');
+  if(state.name)nameIn.value=state.name;
+  ensureSession().then(()=>{
+    logEvent('audit_checkout_opened','audit_contact',
+      {from:CONFIG.SESSION?'search_handoff':'direct'},{current_screen:'audit_contact'});
+  });
+  prepopulate();
+  history.replaceState({screen:'contact'},'','#contact');
+  renderScreen('contact');
+})();
+</script>
+</body>
+</html>
