@@ -537,13 +537,14 @@ const CONFIG=(function(){
     /* Pricing — config-driven (Jonathan: leave pricing to the end; discount is
        whatever gets the net total to NET_TOTAL, always). */
     PRICE_AUDIT:149, PRICE_CONSULT:149, NET_TOTAL:99, VAT_RATE:0.20,
-    /* Zoho Bookings booking-page URLs for the two Audit Call types. Until these
-       are configured the page captures a date/time preference instead. */
-    BOOK_PHONE_URL:q.get('bookphone')||'',
-    BOOK_VIDEO_URL:q.get('bookvideo')||'',
-    /* Stripe payment link for "over the phone now" — until configured we show
-       the we'll-call-you message with the invoice reference. */
-    STRIPE_LINK:q.get('stripe')||''
+    /* Zoho Bookings booking pages for the two Audit Call types (Jonathan,
+       27 Aug): audit-review = Teams/video, Audit-Phone = phone. */
+    BOOK_PHONE_URL:q.get('bookphone')||'https://bookings.thetrademarkhelpline.com/Audit-Phone',
+    BOOK_VIDEO_URL:q.get('bookvideo')||'https://bookings.thetrademarkhelpline.com/audit-review',
+    /* "Over the phone now" → POST /audit-pay on this engine, which creates a
+       Stripe Checkout session server-side (STRIPE_SECRET_KEY env on Render).
+       If the endpoint isn't configured we fall back to we'll-call-you. */
+    PAY_ENDPOINT:'/audit-pay'
   };
 })();
 function journeyBase(){return CONFIG.JOURNEY.replace(/\/$/,'');}
@@ -1017,13 +1018,16 @@ function submitApplicant(){
 
 /* ================= PAGE 8 — SUMMARY & PAYMENT ================= */
 function money(n){return '£'+n.toFixed(2);}
+/* Non-UK organisation / non-UK individual: no VAT — £99 total (Jonathan, 27 Aug). */
+function vatExempt(){return state.applicant.kind==='nonuk_org'||state.applicant.kind==='nonuk_ind';}
 function pricing(){
   const consult=state.consult.taken===true;
   const gross=CONFIG.PRICE_AUDIT+(consult?CONFIG.PRICE_CONSULT:0);
-  const discount=gross-CONFIG.NET_TOTAL;   /* whatever gets to £99 net */
+  const discount=gross-CONFIG.NET_TOTAL;   /* Audit Promotion — whatever gets to £99 net */
   const net=CONFIG.NET_TOTAL;
-  const vat=net*CONFIG.VAT_RATE;
-  return {consult,gross,discount,net,vat,total:net+vat};
+  const exempt=vatExempt();
+  const vat=exempt?0:net*CONFIG.VAT_RATE;
+  return {consult,gross,discount,net,vat,exempt,total:net+vat};
 }
 function invoiceRef(){return 'AUD-'+(state.sessionId||'').replace(/-/g,'').slice(0,8).toUpperCase();}
 function renderSummary(){
@@ -1060,9 +1064,11 @@ function renderSummary(){
   document.getElementById('sum-totals').innerHTML=
     `<div class="tr"><span>Trademark Audit</span><span>${money(CONFIG.PRICE_AUDIT)}</span></div>`+
     (pr.consult?`<div class="tr"><span>Audit Consultation</span><span>${money(CONFIG.PRICE_CONSULT)}</span></div>`:'')+
-    `<div class="tr disc"><span>Discount</span><span>&minus;${money(pr.discount)}</span></div>`+
+    `<div class="tr disc"><span>Audit Promotion</span><span>&minus;${money(pr.discount)}</span></div>`+
     `<div class="tr"><span>Net total</span><span>${money(pr.net)}</span></div>`+
-    `<div class="tr"><span>VAT @ ${Math.round(CONFIG.VAT_RATE*100)}%</span><span>${money(pr.vat)}</span></div>`+
+    (pr.exempt
+      ?`<div class="tr"><span>VAT — not applicable (outside the UK)</span><span>${money(0)}</span></div>`
+      :`<div class="tr"><span>VAT @ ${Math.round(CONFIG.VAT_RATE*100)}%</span><span>${money(pr.vat)}</span></div>`)+
     `<div class="tr grand"><span>Total payable</span><span>${money(pr.total)}</span></div>`;
   /* invoice-date constraints: ≥2 days before the consultation where relevant */
   const pd=document.getElementById('pay-date');
@@ -1083,13 +1089,25 @@ function payChoice(m){
   document.getElementById('pay-inv-body').classList.toggle('hidden',m!=='invoice');
   if(m==='phone_now'){
     const pr=pricing();
-    document.getElementById('pay-now-info').innerHTML=
-      `<b>Invoice reference: ${invoiceRef()}</b><br>`+
-      (CONFIG.STRIPE_LINK
-        ?`<a class="btn primary" style="display:inline-block;margin-top:10px;text-decoration:none"
-             href="${CONFIG.STRIPE_LINK}" target="_blank" rel="noopener">Pay ${money(pr.total)} securely now</a>`
-        :`We’ll call you on <b>${state.payment.phone||state.contact.phone}</b> to take secure
-          card payment of <b>${money(pr.total)}</b>. Have your card ready — it only takes a minute.`);
+    const box=document.getElementById('pay-now-info');
+    box.innerHTML=`<b>Invoice reference: ${invoiceRef()}</b><br>
+      <span class="muted-note">Preparing your secure payment form&hellip;</span>`;
+    fetch(CONFIG.PAY_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ref:invoiceRef(),consult:pr.consult,vat_exempt:pr.exempt,
+        email:state.contact.email,session_id:state.sessionId})})
+      .then(r=>r.json()).then(d=>{
+        box.innerHTML=`<b>Invoice reference: ${invoiceRef()}</b><br>`+
+          (d&&d.ok&&d.url
+            ?`<a class="btn primary" style="display:inline-block;margin-top:10px;text-decoration:none"
+               href="${d.url}" target="_blank" rel="noopener">Pay ${money(pr.total)} securely now</a>
+              <div class="muted-note">Card payment handled securely by Stripe.</div>`
+            :`We’ll call you on <b>${state.contact.phone}</b> to take secure card payment of
+              <b>${money(pr.total)}</b>. Have your card ready — it only takes a minute.`);
+      }).catch(()=>{
+        box.innerHTML=`<b>Invoice reference: ${invoiceRef()}</b><br>
+          We’ll call you on <b>${state.contact.phone}</b> to take secure card payment of
+          <b>${money(pr.total)}</b>.`;
+      });
   }
 }
 function submitOrder(){
